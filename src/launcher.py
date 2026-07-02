@@ -302,6 +302,9 @@ class CompletionTracker:
         self._lock = threading.Lock()
         self.all_done = threading.Event()
         self.total = total
+        # total=0 时直接置位，避免 main() 阻塞等待零学生
+        if total == 0:
+            self.all_done.set()
 
     def mark_voice(self, name: str) -> None:
         """标记某学生语音分析完成"""

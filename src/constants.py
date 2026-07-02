@@ -44,7 +44,7 @@ MD_PATTERN_STANDARD: Final[re.Pattern] = re.compile(
 """正则：提取标准文本部分（位于 **=== 标准文本 ===** 和比对结果之间）"""
 
 MD_PATTERN_COMPARE: Final[re.Pattern] = re.compile(
-    _RE_COMPARE_PREFIX + r".*?===\)\*\*\n(.*)", re.DOTALL
+    _RE_COMPARE_PREFIX + r".*?）===\*\*\n(.*)", re.DOTALL
 )
 """正则：提取比对结果部分（从 **=== LLM 比对结果...===** 之后到文末）"""
 
