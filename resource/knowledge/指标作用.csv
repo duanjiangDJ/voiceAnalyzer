@@ -1,0 +1,89 @@
+编号,eGeMAPS v02 特征名称 (Feature Name),所属物理维度,作用与临床/情感计算意义
+1,F0semitoneFrom27.5Hz_sma3nz_amean,频率 (基频),整段音频基频（音高）的算术平均值，反映说话人的基础音调高低。
+2,F0semitoneFrom27.5Hz_sma3nz_stddevNorm,频率 (基频),基频的标准差（归一化），反映音高的波动程度和语调起伏。
+3,F0semitoneFrom27.5Hz_sma3nz_percentile20.0,频率 (基频),基频的第20百分位数，代表说话人音高的下限或低音部分的表现。
+4,F0semitoneFrom27.5Hz_sma3nz_percentile50.0,频率 (基频),基频的中位数，比平均值更能稳定反映说话人的核心音高。
+5,F0semitoneFrom27.5Hz_sma3nz_percentile80.0,频率 (基频),基频的第80百分位数，代表说话人音高的上限或高音部分的表现。
+6,F0semitoneFrom27.5Hz_sma3nz_pctlrange0-2,频率 (基频),第80与第20百分位数的差值（音高范围），反映语调的跨度。
+7,F0semitoneFrom27.5Hz_sma3nz_meanRisingSlope,频率 (基频),音高上升段的平均斜率，常与兴奋、愤怒或疑问语气相关。
+8,F0semitoneFrom27.5Hz_sma3nz_stddevRisingSlope,频率 (基频),音高上升斜率的标准差，反映语音语调上升时的变化剧烈程度。
+9,F0semitoneFrom27.5Hz_sma3nz_meanFallingSlope,频率 (基频),音高下降段的平均斜率，常与情绪低落、陈述句结尾相关。
+10,F0semitoneFrom27.5Hz_sma3nz_stddevFallingSlope,频率 (基频),音高下降斜率的标准差，反映语音语调下降时的变化剧烈程度。
+11,loudness_sma3_amean,振幅 (响度),整段音频响度的算术平均值，反映说话声音的整体宏亮程度。
+12,loudness_sma3_stddevNorm,振幅 (响度),响度的归一化标准差，反映声音大小的变化幅度和动态范围。
+13,loudness_sma3_percentile20.0,振幅 (响度),响度的第20百分位数，代表声音最轻（接近背景音或弱音）时的强度。
+14,loudness_sma3_percentile50.0,振幅 (响度),响度的中位数，反映说话时的常规核心音量。
+15,loudness_sma3_percentile80.0,振幅 (响度),响度的第80百分位数，代表说话时重音或大声说话时的强度。
+16,loudness_sma3_pctlrange0-2,振幅 (响度),第80与第20百分位数响度的差值，反映说话强弱交替的动态。
+17,loudness_sma3_meanRisingSlope,振幅 (响度),响度上升段的平均斜率，反映声音突发变大的速度（如爆发力）。
+18,loudness_sma3_stddevRisingSlope,振幅 (响度),响度上升斜率的标准差，反映声音变大过程中的不稳定性。
+19,loudness_sma3_meanFallingSlope,振幅 (响度),响度下降段的平均斜率，反映声音渐弱、消散的速度。
+20,loudness_sma3_stddevFallingSlope,振幅 (响度),响度下降斜率的标准差，反映声音渐弱过程中的不稳定性。
+21,spectralFlux_sma3_amean,频谱形状,频谱通量的平均值，反映连续帧之间频谱分布的变化剧烈程度（常指声音音色的多变性）。
+22,spectralFlux_sma3_stddevNorm,频谱形状,频谱通量的归一化标准差，反映音色变化的起伏和动态。
+23,mfcc1_sma3_amean,频谱平衡,MFCC 1 的平均值，捕捉声音的基础频谱包络，常用于表征音色。
+24,mfcc1_sma3_stddevNorm,频谱平衡,MFCC 1 的归一化标准差，反映核心音色的波动情况。
+25,mfcc2_sma3_amean,频谱平衡,MFCC 2 的平均值，辅助表征音色（常与元音的辅音过渡相关）。
+26,mfcc2_sma3_stddevNorm,频谱平衡,MFCC 2 的归一化标准差。
+27,mfcc3_sma3_amean,频谱平衡,MFCC 3 的平均值，提供更精细的音色特征。
+28,mfcc3_sma3_stddevNorm,频谱平衡,MFCC 3 的归一化标准差。
+29,mfcc4_sma3_amean,频谱平衡,MFCC 4 的平均值。
+30,mfcc4_sma3_stddevNorm,频谱平衡,MFCC 4 的归一化标准差。
+31,jitterLocal_sma3nz_amean,声音质量,局部抖晃度的平均值，反映声带振动的微小频率扰动（声带疲劳、沙哑时变高）。
+32,jitterLocal_sma3nz_stddevNorm,声音质量,抖晃度的归一化标准差，反映频率微扰的波动性。
+33,shimmerLocal_sma3nz_amean,声音质量,局部闪烁度的平均值，反映声带振动的微小振幅扰动（声音颤抖、病变时变高）。
+34,shimmerLocal_sma3nz_stddevNorm,声音质量,闪烁度的归一化标准差。
+35,HNRdBdB_sma3nz_amean,声音质量,谐噪比（dB）的平均值，反映声音中和谐成分与噪声的比例。值越高声音越清脆，值越低声音越沙哑。
+36,HNRdBdB_sma3nz_stddevNorm,声音质量,谐噪比的标准差，反映嗓音清脆度的动态变化。
+37,alphaRatioV_sma3nz_amean,频谱平衡 (有声段),有声段（元音等）阿尔法系数平均值，反映高频段与低频段的能量倾斜，常用于评估声音的明亮或沉闷度。
+38,alphaRatioV_sma3nz_stddevNorm,频谱平衡 (有声段),有声段阿尔法系数的标准差。
+39,hammarbergIndexV_sma3nz_amean,频谱平衡 (有声段),有声段哈马伯格指数平均值，衡量频谱的高频衰减，值高代表高频弱、声音柔和；值低代表高频强、声音刺耳。
+40,hammarbergIndexV_sma3nz_stddevNorm,频谱平衡 (有声段),有声段哈马伯格指数的标准差。
+41,slopeV0-500_sma3nz_amean,频谱平衡 (有声段),有声段 0-500 Hz 的频谱斜率平均值，反映低频基音区域的能量下降速度。
+42,slopeV0-500_sma3nz_stddevNorm,频谱平衡 (有声段),有声段 0-500 Hz 频谱斜率的标准差。
+43,slopeV500-1500_sma3nz_amean,频谱平衡 (有声段),有声段 500-1500 Hz 的频谱斜率平均值，通常与第一共振峰和元音共振相关。
+44,slopeV500-1500_sma3nz_stddevNorm,频谱平衡 (有声段),有声段 500-1500 Hz 频谱斜率的标准差。
+45,spectralFluxV_sma3nz_amean,频谱形状 (有声段),有声段频谱通量的平均值，反映发元音或有声过渡时音色的变化率。
+46,spectralFluxV_sma3nz_stddevNorm,频谱形状 (有声段),有声段频谱通量的标准差。
+47,mfcc1V_sma3nz_amean,频谱平衡 (有声段),有声段 MFCC 1 的平均值，表征有声段核心音色。
+48,mfcc1V_sma3nz_stddevNorm,频谱平衡 (有声段),有声段 MFCC 1 的归一化标准差。
+49,mfcc2V_sma3nz_amean,频谱平衡 (有声段),有声段 MFCC 2 的平均值。
+50,mfcc2V_sma3nz_stddevNorm,频谱平衡 (有声段),有声段 MFCC 2 的归一化标准差。
+51,mfcc3V_sma3nz_amean,频谱平衡 (有声段),有声段 MFCC 3 的平均值。
+52,mfcc3V_sma3nz_stddevNorm,频谱平衡 (有声段),有声段 MFCC 3 的归一化标准差。
+53,mfcc4V_sma3nz_amean,频谱平衡 (有声段),有声段 MFCC 4 的平均值。
+54,mfcc4V_sma3nz_stddevNorm,频谱平衡 (有声段),有声段 MFCC 4 的归一化标准差。
+55,alphaRatioUV_sma3nz_amean,频谱平衡 (无声段),无声/辅音段（UV）阿尔法系数平均值，反映摩擦音或清辅音的高低频能量分布。
+56,hammarbergIndexUV_sma3nz_amean,频谱平衡 (无声段),无声段哈马伯格指数平均值。
+57,slopeUV0-500_sma3nz_amean,频谱平衡 (无声段),无声段 0-500 Hz 频谱斜率平均值。
+58,slopeUV500-1500_sma3nz_amean,频谱平衡 (无声段),无声段 500-1500 Hz 频谱斜率平均值。
+59,spectralFluxUV_sma3nz_amean,频谱形状 (无声段),无声段频谱通量的平均值（反映呼吸声或辅音部分的白噪声动态）。
+60,F1frequency_sma3nz_amean,共振峰 (F1),第一共振峰中心频率的平均值，与舌位的高低（口张开度）强烈相关。
+61,F1frequency_sma3nz_stddevNorm,共振峰 (F1),第一共振峰中心频率的标准差，反映说话时元音张口度的多变性。
+62,F1bandwidth_sma3nz_amean,共振峰 (F1),第一共振峰带宽的平均值，带宽越宽说明该频段声音能量越发散（多见于鼻音化或发音不清晰）。
+63,F1bandwidth_sma3nz_stddevNorm,共振峰 (F1),第一共振峰带宽的标准差。
+64,F1amplitudeLogRelF0_sma3nz_amean,共振峰 (F1),第一共振峰相对于基频（F0）的对数振幅平均值，反映第一共振峰的相对能量强弱。
+65,F1amplitudeLogRelF0_sma3nz_stddevNorm,共振峰 (F1),第一共振峰相对对数振幅的标准差。
+66,F2frequency_sma3nz_amean,共振峰 (F2),第二共振峰中心频率的平均值，与舌位的前后（前元音/后元音）强烈相关。
+67,F2frequency_sma3nz_stddevNorm,共振峰 (F2),第二共振峰中心频率的标准差。
+68,F2bandwidth_sma3nz_amean,共振峰 (F2),第二共振峰带宽的平均值。
+69,F2bandwidth_sma3nz_stddevNorm,共振峰 (F2),第二共振峰带宽的标准差。
+70,F2amplitudeLogRelF0_sma3nz_amean,共振峰 (F2),第二共振峰相对于基频的对数振幅平均值。
+71,F2amplitudeLogRelF0_sma3nz_stddevNorm,共振峰 (F2),第二共振峰相对对数振幅的标准差。
+72,F3frequency_sma3nz_amean,共振峰 (F3),第三共振峰中心频率的平均值，与卷舌音、发音人身份、音质特点相关。
+73,F3frequency_sma3nz_stddevNorm,共振峰 (F3),第三共振峰中心频率的标准差。
+74,F3bandwidth_sma3nz_amean,共振峰 (F3),第三共振峰带宽的平均值。
+75,F3bandwidth_sma3nz_stddevNorm,共振峰 (F3),第三共振峰带宽的标准差。
+76,F3amplitudeLogRelF0_sma3nz_amean,共振峰 (F3),第三共振峰相对于基频的对数振幅平均值。
+77,F3amplitudeLogRelF0_sma3nz_stddevNorm,共振峰 (F3),第三共振峰相对对数振幅的标准差。
+78,ratioOfVvoicedToAllSegments,时序特征 (语速),有声段占整个音频的比例，值越高说明停顿越少，说话越连续。
+79,rateOfSpeech,时序特征 (语速),语速：每秒钟内包含的有声段（近似音节）个数，直观反映说话快慢。
+80,nbVvoicedSegmentsPerSec,时序特征 (语速),每秒的有声段数量（与语速接近但统计技术细节不同）。
+81,meanPeriodOfVoicedSegments,时序特征 (停顿),有声段（持续说话）的平均持续时间（秒）。
+82,stddevOfPeriodOfVoicedSegments,时序特征 (停顿),有声段持续时间 Standard Deviation（标准差），反映句长变化。
+83,meanPeriodOfUnvoicedSegments,时序特征 (停顿),无声段（停顿、静音）的平均持续时间（秒），反映说话时的思考停顿或呼吸节奏。
+84,stddevOfPeriodOfUnvoicedSegments,时序特征 (停顿),无声段持续时间的标准差。
+85,equivalentSoundLevel_dBp,能量 (全局),等效声级（dB），衡量音频整段的物理能量水平，常用于校准和音量分析。
+86,F1frequency_sma3nz_amean_voicing,频率 (修正),v02新增：专门在强发音区间统计的F1频率平均值（增强鲁棒性）。
+87,F2frequency_sma3nz_amean_voicing,频率 (修正),v02新增：专门在强发音区间统计的F2频率平均值（增强鲁棒性）。
+88,F3frequency_sma3nz_amean_voicing,频率 (修正),v02新增：专门在强发音区间统计的F3频率平均值（增强鲁棒性）。

@@ -1,0 +1,36 @@
+# 敏感配置
+.env
+CLAUDE.md
+agent_docs/
+
+# Python 缓存
+__pycache__/
+
+# 虚拟环境
+.venv/
+
+# ML 模型（文件过大）
+models/
+
+# 压缩包
+*.zip
+
+# 自动生成的输出
+resource/result/
+
+# 音频文件（不纳入版本控制）
+*.mp3
+*.wav
+*.m4a
+*.flac
+*.ogg
+*.mp4
+*.MP3
+*.M4A
+
+# 临时文件
+*_norm.wav
+*_norm.mp3
+*_norm.m4a
+*.tmp
+*_test_*
