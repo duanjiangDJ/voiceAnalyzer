@@ -37,6 +37,19 @@ if __name__ == "__main__":
 import matplotlib
 matplotlib.use("Agg")  # 多线程安全，必须在 import pyplot 之前
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+
+# ---- 中文字体设置 ----
+# 按优先级尝试常见中文字体，避免 title/label 显示为方块
+for _font_name in ["SimHei", "Microsoft YaHei", "WenQuanYi Micro Hei", "Noto Sans CJK SC", "DejaVu Sans"]:
+    try:
+        _test_fonts = [f.name for f in fm.fontManager.ttflist]
+        if _font_name in _test_fonts:
+            plt.rcParams["font.sans-serif"] = [_font_name, "DejaVu Sans"]
+            plt.rcParams["axes.unicode_minus"] = False
+            break
+    except Exception:
+        continue
 import numpy as np
 import pandas as pd
 
@@ -157,6 +170,40 @@ def generate_error_wordclouds(
     return output_paths
 
 
+def _find_chinese_font_path() -> str | None:
+    """
+    在系统中查找可用的中文字体文件路径。
+
+    返回:
+        字体 .ttf 文件路径，未找到则返回 None
+    """
+    # 常见中文字体路径
+    candidates = [
+        "C:/Windows/Fonts/simhei.ttf",         # 黑体 (Windows)
+        "C:/Windows/Fonts/msyh.ttc",            # 微软雅黑 (Windows)
+        "C:/Windows/Fonts/simsun.ttc",          # 宋体 (Windows)
+        "C:/Windows/Fonts/simkai.ttf",          # 楷体 (Windows)
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",  # Linux
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",  # Linux
+        "/System/Library/Fonts/PingFang.ttc",   # macOS
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+
+    # 回退：遍历 matplotlib 已知字体
+    try:
+        import matplotlib.font_manager as _fm
+        for _f in _fm.fontManager.ttflist:
+            if any(kw in _f.name.lower() for kw in
+                   ("simhei", "yahei", "simsun", "simkai", "cjk", "wqy",
+                    "pingfang", "noto sans", "wenquan")):
+                return _f.fname
+    except Exception:
+        pass
+    return None
+
+
 def _render_wordcloud(
     word_freq: Counter,
     title: str,
@@ -179,7 +226,10 @@ def _render_wordcloud(
         _render_fallback_wordcloud(word_freq, title, color, output_path)
         return
 
-    # 创建词云
+    # 创建词云（尝试使用中文字体）
+    font_path = _find_chinese_font_path()
+    if font_path:
+        print(f"[词云] 使用字体: {font_path}")
     wc = WordCloud(
         width=800,
         height=600,
@@ -187,7 +237,7 @@ def _render_wordcloud(
         color_func=lambda *args, **kwargs: color,
         max_words=100,
         collocations=False,
-        font_path=None,  # 使用默认字体
+        font_path=font_path,  # 中文字体路径（None 则使用默认）
         prefer_horizontal=0.7,
     )
     wc.generate_from_frequencies(word_freq)

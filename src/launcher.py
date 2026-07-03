@@ -11,7 +11,15 @@ launcher.py — 三线程池并行调度器（断点续传）
   4. Whisper 不等 LLM：转写完成后立即提交 LLM 并处理下一个学生
   5. 断点续传：progress.json 记录每步状态，中断后重启自动跳过已完成步骤
   6. 实时输出：summary.csv 随学生完成即时更新
-  7. 8 阶段流水线：预检查 → 标准分析 → 语音 → 文字 → 等待 → 后处理 → 汇总 → 归档+可视化
+  7. 8 阶段流水线：
+     Phase 1: 标准文件发现 + 特征预计算
+     Phase 2: 语音分析（VOICE_ANALYSIS 控制）
+     Phase 3: 转写 + LLM（WHISPER_TRANSCRIBE + LLM_COMPARE 控制）
+     Phase 4: 等待完成
+     Phase 5: 后处理（POST_PROCESS 控制）
+     Phase 6: 最终汇总
+     Phase 7: 数据完整性预检查（FILTER_PRECHECK 控制）
+     Phase 8: 归档 + 错题可视化（ERROR_VISUALIZE 控制）
 
 架构：
   src/config.py → _config（统一配置，含模块开关）
@@ -565,11 +573,11 @@ def main() -> None:
       Phase 0: 加载配置 + 计时初始化
       Phase 1: 预检查（可选，FILTER_PRECHECK 控制）
       Phase 2: 标准文件发现 + 特征预计算
-      Phase 3: 语音分析（可选，VOICE_ANALYSIS 控制）
-      Phase 4: Whisper 转写 + LLM 比对（可选，WHISPER_TRANSCRIBE + LLM_COMPARE 控制）
+      Phase 2: 语音分析（可选，VOICE_ANALYSIS 控制）
+      Phase 3: Whisper 转写 + LLM 比对（可选，WHISPER_TRANSCRIBE + LLM_COMPARE 控制）
       Phase 5: 阻塞等待 CompletionTracker.all_done
-      Phase 6: 后处理（可选，POST_PROCESS 控制）
-      Phase 7: 最终汇总 + 耗时统计
+      Phase 5: 后处理（可选，POST_PROCESS 控制）
+      Phase 6: 最终汇总 + 耗时统计
       Phase 8: 归档 + 错题可视化（可选，ERROR_VISUALIZE 控制）
     """
     global \
@@ -604,25 +612,9 @@ def main() -> None:
     Path(result_dir).mkdir(parents=True, exist_ok=True)
 
     # =========================================================================
-    # Phase 1: 预检查（可选）
+    # Phase 1: 标准文件发现 + 特征预计算
     # =========================================================================
-    if _config.modules.filter_precheck:
-        from src.filter_name import filter_precheck
-
-        print("\n[Phase 1] 数据完整性预检查 ...")
-        missing = filter_precheck(
-            audio_dir=imitation_audio_dir,
-            summary_csv_path=summary_path if os.path.exists(summary_path) else None,
-        )
-        if missing:
-            print(f"  ⚠ 警告: {len(missing)} 个音频文件在 summary 中没有记录")
-    else:
-        print("\n[Phase 1] 预检查已跳过（FILTER_PRECHECK=0）")
-
-    # =========================================================================
-    # Phase 2: 标准文件发现 + 特征预计算
-    # =========================================================================
-    print("\n[Phase 2] 标准文件发现 ...")
+    print("\n[Phase 1] 标准文件发现 ...")
 
     try:
         standard_audio = find_single_file(standard_audio_dir, AUDIO_EXTENSIONS)
@@ -713,7 +705,7 @@ def main() -> None:
 
     try:
         # =====================================================================
-        # Phase 3: 语音分析（可选）
+        # Phase 2: 语音分析（可选）
         # =====================================================================
         if _config.modules.voice_analysis:
             print("\n[Phase 3] 提交语音分析任务 ...")
@@ -728,7 +720,7 @@ def main() -> None:
                 update_student_progress(name, voice="done")
 
         # =====================================================================
-        # Phase 4: Whisper + LLM（可选）
+        # Phase 3: Whisper + LLM（可选）
         # =====================================================================
         if _config.modules.whisper_transcribe and _config.modules.llm_compare:
             print("\n[Phase 4] 提交文字分析任务 ...")
@@ -748,7 +740,7 @@ def main() -> None:
                 update_student_progress(name, text="done")
 
         # =====================================================================
-        # Phase 5: 等待完成
+        # Phase 4: 等待完成
         # =====================================================================
         print("\n[Phase 5] 等待所有任务完成 ...\n")
         completion_tracker.all_done.wait()
@@ -769,7 +761,7 @@ def main() -> None:
                 print(f"  {pool_name} 池关闭异常: {e}")
 
     # =========================================================================
-    # Phase 6: 后处理（可选）
+    # Phase 5: 后处理（可选）
     # =========================================================================
     if _config.modules.post_process:
         from src.audio_output import post_process
@@ -785,7 +777,7 @@ def main() -> None:
         print("\n[Phase 6] 后处理已跳过（POST_PROCESS=0）")
 
     # =========================================================================
-    # Phase 7: 最终汇总 + 耗时统计
+    # Phase 6: 最终汇总 + 耗时统计
     # =========================================================================
     print(f"\n[Phase 7] 最终汇总 ...")
     write_summary()
@@ -808,6 +800,22 @@ def main() -> None:
         if isinstance(total_score, float):
             total_score = f"{total_score:.2f}"
         print(f"  {student_name}: 准确率={acc}, 语音={voice_score}, 总成绩={total_score}")
+
+    # =========================================================================
+    # Phase 7: 数据完整性预检查（可选 — summary.csv 已生成，可做完整对比）
+    # =========================================================================
+    if _config.modules.filter_precheck:
+        from src.filter_name import filter_precheck
+
+        print(f"\n[Phase 7] 数据完整性预检查 ...")
+        missing = filter_precheck(
+            audio_dir=imitation_audio_dir,
+            summary_csv_path=summary_path,
+        )
+        if missing:
+            print(f"  ⚠ 警告: {len(missing)} 个音频文件未出现在 summary 中")
+    else:
+        print("\n[Phase 7] 预检查已跳过（FILTER_PRECHECK=0）")
 
     # =========================================================================
     # Phase 8: 归档 + 错题可视化（可选）
@@ -841,17 +849,26 @@ def main() -> None:
 
 
 def _run_post_phases(result_dir: str) -> None:
-    """当所有学生已处理完成时，仍执行后处理和可视化阶段。"""
+    """当所有学生已处理完成时，仍执行后处理、预检查和可视化阶段。"""
     if _config.modules.post_process:
         from src.audio_output import post_process
 
-        print("\n[Phase 6] 后处理：汇总 Excel ...")
+        print("\n[Phase 5] 后处理：汇总 Excel ...")
         if os.path.exists(summary_path):
             post_process(
                 excel_path=summary_path,
                 result_dir=result_dir,
                 output_path=os.path.join(result_dir, "summary_with_details.xlsx"),
             )
+
+    if _config.modules.filter_precheck:
+        from src.filter_name import filter_precheck
+
+        print(f"\n[Phase 7] 数据完整性预检查 ...")
+        filter_precheck(
+            audio_dir=_config.paths.abs_path(_config.paths.imitation_audio_dir),
+            summary_csv_path=summary_path,
+        )
 
     if _config.modules.error_visualize:
         from src.error_visualizer import (
