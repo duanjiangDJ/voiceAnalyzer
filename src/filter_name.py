@@ -53,8 +53,11 @@ def filter_precheck(
     # ---- 1. 验证路径 ----
     if not os.path.isdir(audio_dir):
         raise FileNotFoundError(f"音频文件夹不存在: {audio_dir}")
-    if not os.path.exists(summary_csv_path):
-        raise FileNotFoundError(f"summary.csv 不存在: {summary_csv_path}")
+    # 首次运行时 summary.csv 可能还不存在，此时仅列出音频文件不做对比
+    if summary_csv_path is None or not os.path.exists(summary_csv_path):
+        print(f"[预检查] summary.csv 尚未生成，跳过对比。"
+              f"音频文件夹中有 {len(os.listdir(audio_dir))} 个文件。")
+        return []
 
     # ---- 2. 提取音频文件名（不含扩展名） ----
     filenames_without_ext = []

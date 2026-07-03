@@ -102,7 +102,12 @@ def generate_error_wordclouds(
                     for err in err_list:
                         if isinstance(err, dict):
                             # replace 类型: {"standard": "word", "transcribed": "word"}
-                            word = err.get("transcribed", err.get("standard", ""))
+                            # insert/delete 类型: {"word": "word"}
+                            word = err.get(
+                                "transcribed",
+                                err.get("standard",
+                                        err.get("word", ""))
+                            )
                         elif isinstance(err, str):
                             word = err
                         else:

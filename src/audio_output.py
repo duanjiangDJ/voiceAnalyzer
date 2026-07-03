@@ -65,15 +65,18 @@ def post_process(
     if not os.path.exists(result_dir):
         raise FileNotFoundError(f"结果目录不存在: {result_dir}")
 
-    # ---- 2. 自动选择引擎 ----
-    if engine is None:
-        ext = os.path.splitext(excel_path)[1].lower()
-        engine = "openpyxl" if ext == ".xlsx" else "xlrd"
-
-    # ---- 3. 读取 Excel ----
-    df = pd.read_excel(excel_path, engine=engine)
-    print(f"[后处理] 读取 Excel: {excel_path}（{len(df)} 行）")
-    print(f"[后处理] Excel 列名: {df.columns.tolist()}")
+    # ---- 2. 自动选择引擎和读取方式 ----
+    ext = os.path.splitext(excel_path)[1].lower()
+    if ext == ".csv":
+        # CSV 文件（summary.csv）：直接读取
+        df = pd.read_csv(excel_path, encoding="utf-8-sig")
+    else:
+        # Excel 文件（.xls / .xlsx）
+        if engine is None:
+            engine = "openpyxl" if ext == ".xlsx" else "xlrd"
+        df = pd.read_excel(excel_path, engine=engine)
+    print(f"[后处理] 读取: {excel_path}（{len(df)} 行）")
+    print(f"[后处理] 列名: {df.columns.tolist()}")
 
     # ---- 4. 添加新列 ----
     new_columns = ["朗读转写文本", "朗读标准文本", "比对结果", "对比图片"]
