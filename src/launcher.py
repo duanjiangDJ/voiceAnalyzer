@@ -570,14 +570,13 @@ def _llm_task_with_callback(
 def main() -> None:
     """
     主调度流程（8 阶段）：
-      Phase 0: 加载配置 + 计时初始化
-      Phase 1: 预检查（可选，FILTER_PRECHECK 控制）
-      Phase 2: 标准文件发现 + 特征预计算
+      Phase 1: 标准文件发现 + 特征预计算
       Phase 2: 语音分析（可选，VOICE_ANALYSIS 控制）
       Phase 3: Whisper 转写 + LLM 比对（可选，WHISPER_TRANSCRIBE + LLM_COMPARE 控制）
-      Phase 5: 阻塞等待 CompletionTracker.all_done
+      Phase 4: 等待完成
       Phase 5: 后处理（可选，POST_PROCESS 控制）
       Phase 6: 最终汇总 + 耗时统计
+      Phase 7: 数据完整性预检查（可选，FILTER_PRECHECK 控制）
       Phase 8: 归档 + 错题可视化（可选，ERROR_VISUALIZE 控制）
     """
     global \
