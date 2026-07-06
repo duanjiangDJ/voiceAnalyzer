@@ -154,11 +154,13 @@ modules:                  # 模块开关（true=启用）
   error_visualize: true
 
 wordcloud:                # 词云参数
-  width: 800
-  height: 600
-  max_words: 100
-  prefer_horizontal: 1.0  # 1.0=全部横向
-  stopwords:              # 停用词（不显示在词云中）
+  width: 800               # 画布宽度
+  height: 600              # 画布高度
+  max_words: 100           # 最多显示单词数
+  max_font_size: 120       # 单词最大字号
+  min_font_size: 8         # 单词最小字号
+  prefer_horizontal: 1.0   # 1.0=全部横向
+  stopwords:               # 停用词（不显示在词云中）
     - "the"
     - "of"
     - "and"

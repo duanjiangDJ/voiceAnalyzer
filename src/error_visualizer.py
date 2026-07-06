@@ -276,6 +276,8 @@ def _render_wordcloud(
         background_color=wc_config.background_color,
         color_func=lambda *args, **kwargs: color,
         max_words=wc_config.max_words,
+        max_font_size=wc_config.max_font_size,
+        min_font_size=wc_config.min_font_size,
         collocations=False,
         font_path=font_path,
         prefer_horizontal=wc_config.prefer_horizontal,
@@ -341,6 +343,9 @@ def generate_progress_curves(
         output_dir = os.path.join(
             os.path.dirname(history_dir), "error_analysis", "progress_curves"
         )
+    # 确保输出到独立子目录，避免覆盖词云等兄弟文件
+    if os.path.basename(output_dir) != "progress_curves":
+        output_dir = os.path.join(output_dir, "progress_curves")
     # 清除旧输出后重建（确保覆盖）
     if os.path.isdir(output_dir):
         shutil.rmtree(output_dir)

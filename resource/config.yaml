@@ -39,7 +39,9 @@ modules:
 wordcloud:
   width: 800
   height: 600
-  max_words: 100
+  max_words: 200
+  max_font_size: 100             # 单词最大字号（None=自动计算）
+  min_font_size: 8               # 单词最小字号
   background_color: "white"
   prefer_horizontal: 1.0          # 1.0=全部横向排列，不允许纵向词
   color_all: "#455a64"             # 三合一词云主色调（深灰蓝）

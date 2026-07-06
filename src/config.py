@@ -63,6 +63,8 @@ class WordCloudConfig:
     width: int = 800
     height: int = 600
     max_words: int = 100
+    max_font_size: int | None = 120  # None=自动计算
+    min_font_size: int = 8
     background_color: str = "white"
     prefer_horizontal: float = 1.0  # 1.0=全部横向
     color_all: str = "#455a64"       # 三合一图主色调
@@ -237,7 +239,8 @@ def _apply_yaml(cfg: AppConfig, data: dict) -> None:
     # --- wordcloud ---
     wc_data = data.get("wordcloud")
     if isinstance(wc_data, dict):
-        for key in ("width", "height", "max_words", "background_color",
+        for key in ("width", "height", "max_words", "max_font_size",
+                     "min_font_size", "background_color",
                      "prefer_horizontal", "color_all"):
             if key in wc_data:
                 setattr(cfg.wordcloud, key, wc_data[key])
