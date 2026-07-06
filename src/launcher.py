@@ -834,7 +834,7 @@ def main() -> None:
         generate_error_wordclouds(result_dir, error_analysis_dir)
         generate_progress_curves(
             history_dir,
-            os.path.join(error_analysis_dir, "progress_curves.png"),
+            os.path.join(error_analysis_dir, "progress_curves"),
         )
     else:
         print("\n[Phase 8] 错题可视化已跳过（ERROR_VISUALIZE=0）")
@@ -884,7 +884,7 @@ def _run_post_phases(result_dir: str) -> None:
         generate_error_wordclouds(result_dir, error_analysis_dir)
         generate_progress_curves(
             history_dir,
-            os.path.join(error_analysis_dir, "progress_curves.png"),
+            os.path.join(error_analysis_dir, "progress_curves"),
         )
 
 

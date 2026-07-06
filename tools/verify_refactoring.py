@@ -482,11 +482,12 @@ def test_error_visualizer():
         os.makedirs(student_dir)
 
         from src.utils import write_errors_json
+        # 注意：避免使用停用词（the/and/that/a 等会被过滤）
         errors = {
             "replace": [{"standard": "breeze", "transcribed": "breed"},
                         {"standard": "freedom", "transcribed": "free"}],
-            "insert": ["the", "the", "and"],
-            "delete": ["that", "a"],
+            "insert": ["hello", "world", "hello"],
+            "delete": ["gentle", "slaves"],
         }
         write_errors_json(
             os.path.join(student_dir, "test-2220241548_errors.json"),
@@ -524,9 +525,11 @@ def test_error_visualizer():
                 w.writerow(["学生", "单词准确率", "语音综合分", "总成绩"])
                 w.writerow([f"student{i+1}", f"{75+i*5}.00%", f"{70+i*3}", f"{72+i*2}"])
 
-        curve_path = os.path.join(output_dir, "progress_curves.png")
-        result = generate_progress_curves(hd, curve_path)
-        check("progress_curves 已生成", os.path.exists(result))
+        curve_dir = os.path.join(output_dir, "progress_curves")
+        result_paths = generate_progress_curves(hd, curve_dir)
+        check("progress_curves 已生成（>=1 张图）",
+              isinstance(result_paths, list) and len(result_paths) >= 1
+              and all(os.path.exists(p) for p in result_paths))
 
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)

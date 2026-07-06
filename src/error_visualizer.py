@@ -4,26 +4,30 @@ error_visualizer.py — 错题可视化：词云 + 历史进步曲线
 对学生文本比对中的错误进行聚合分析和可视化展示。
 
 功能:
-    1. 错题词云：按替换/多读/漏读三分类，统计错误词频，生成词云图
-    2. 历史进步曲线：按学生绘制多维度评分随时间变化的折线图
+    1. 错题词云：4 张图（替换/多读/漏读 + 三合一合计），
+       停用词过滤、全横向排列、参数可配置
+    2. 历史进步曲线：每位学生一张独立折线图，展示历次运行趋势
+    3. 结果归档：每次运行写入 history/ 并附带 meta.json
 
 公共 API:
-    generate_error_wordclouds()  — 生成三分类词云图
-    generate_progress_curves()   — 生成历史进步曲线
-    archive_current_result()     — 归档本次运行结果
+    generate_error_wordclouds()  — 生成 4 张词云图
+    generate_progress_curves()   — 生成每位学生的历史曲线
+    archive_current_result()     — 归档本次运行结果（含 meta.json）
 
 数据来源:
     - 词云: 每位学生的 _errors.json（由 text_llm.py 生成）
     - 曲线: resource/result/history/ 下归档的 summary.csv
 
 依赖:
-    - matplotlib, pandas (第三方)
+    - matplotlib, pandas, numpy (第三方)
     - wordcloud (第三方，需单独安装)
-    - src.utils: ensure_dir
+    - src.config: AppConfig (词云参数 + 停用词)
+    - src.utils: ensure_dir, read_errors_json
     - src.constants: ERROR_TYPE_REPLACE, ERROR_TYPE_INSERT, ERROR_TYPE_DELETE, WORDCLOUD_COLORS
 """
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -40,8 +44,8 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 
 # ---- 中文字体设置 ----
-# 按优先级尝试常见中文字体，避免 title/label 显示为方块
-for _font_name in ["SimHei", "Microsoft YaHei", "WenQuanYi Micro Hei", "Noto Sans CJK SC", "DejaVu Sans"]:
+for _font_name in ["SimHei", "Microsoft YaHei", "WenQuanYi Micro Hei",
+                     "Noto Sans CJK SC", "DejaVu Sans"]:
     try:
         _test_fonts = [f.name for f in fm.fontManager.ttflist]
         if _font_name in _test_fonts:
@@ -50,9 +54,11 @@ for _font_name in ["SimHei", "Microsoft YaHei", "WenQuanYi Micro Hei", "Noto San
             break
     except Exception:
         continue
+
 import numpy as np
 import pandas as pd
 
+from src.config import AppConfig
 from src.constants import (
     ERROR_CATEGORIES,
     ERROR_TYPE_DELETE,
@@ -61,6 +67,9 @@ from src.constants import (
     WORDCLOUD_COLORS,
 )
 from src.utils import ensure_dir, read_errors_json
+
+# 模块级配置
+_config = AppConfig.load()
 
 
 # ==============================================================================
@@ -72,15 +81,21 @@ def generate_error_wordclouds(
     output_dir: str = "",
 ) -> dict[str, str]:
     """
-    解析 result_dir 下所有学生的 _errors.json，按错误类型（替换/多读/漏读）
-    分别生成词云图，保存到 output_dir。
+    解析 result_dir 下所有学生的 _errors.json，按错误类型生成 4 张词云图：
+      - wordcloud_replace.png : 替换错误
+      - wordcloud_insert.png  : 多读错误
+      - wordcloud_delete.png  : 漏读错误
+      - wordcloud_all.png     : 三种错误合计
+
+    停用词（the/of/to 等）从 _config.wordcloud.stopwords 读取并过滤。
+    所有词强制横向排列（prefer_horizontal=1.0）。
 
     参数:
-        result_dir: resource/result/ 目录路径（含学生子文件夹）
-        output_dir: 词云图输出目录（为空则默认 result_dir/error_analysis/）
+        result_dir: resource/result/ 目录路径
+        output_dir: 输出目录（默认: result_dir/error_analysis/）
 
     返回:
-        {"replace": path, "insert": path, "delete": path} — 三张词云图路径
+        {"replace": path, "insert": path, "delete": path, "all": path}
     """
     if not output_dir:
         output_dir = os.path.join(result_dir, "error_analysis")
@@ -92,17 +107,18 @@ def generate_error_wordclouds(
         ERROR_TYPE_INSERT: [],
         ERROR_TYPE_DELETE: [],
     }
+    all_words: list[str] = []
 
+    stopwords_set = set(w.lower() for w in _config.wordcloud.stopwords)
     student_count = 0
+
     for item in os.listdir(result_dir):
         student_dir = os.path.join(result_dir, item)
         if not os.path.isdir(student_dir):
             continue
-        # 跳过特殊目录
-        if item in ("history", "error_analysis"):
+        if item in ("history", "error_analysis", "progress_curves"):
             continue
 
-        # 查找 _errors.json
         for f in os.listdir(student_dir):
             if f.endswith("_errors.json"):
                 json_path = os.path.join(student_dir, f)
@@ -114,8 +130,6 @@ def generate_error_wordclouds(
                     err_list = errors.get(category, [])
                     for err in err_list:
                         if isinstance(err, dict):
-                            # replace 类型: {"standard": "word", "transcribed": "word"}
-                            # insert/delete 类型: {"word": "word"}
                             word = err.get(
                                 "transcribed",
                                 err.get("standard",
@@ -126,14 +140,24 @@ def generate_error_wordclouds(
                         else:
                             continue
                         word = word.strip().lower()
-                        if word and len(word) > 1:  # 过滤单字母噪声
+                        if word and len(word) > 1 and word not in stopwords_set:
                             error_words[category].append(word)
+                            all_words.append(word)
                 student_count += 1
-                break  # 每个学生只处理一个 errors.json
+                break
 
     print(f"[词云] 共读取 {student_count} 名学生的错误数据")
 
-    # ---- 2. 对每类错误生成词云 ----
+    # ---- 2. 打印停用词过滤统计 ----
+    stopwords_filtered = 0
+    for category in ERROR_CATEGORIES:
+        raw = error_words[category]
+        # 停用词已在上面的循环中过滤，此处仅打印
+    if stopwords_set:
+        print(f"[词云] 停用词列表 ({len(stopwords_set)} 个): "
+              f"{', '.join(sorted(list(stopwords_set)[:10]))}...")
+
+    # ---- 3. 生成 3 张分类词云 + 1 张三合一 ----
     category_labels = {
         ERROR_TYPE_REPLACE: "替换错误 (Replace)",
         ERROR_TYPE_INSERT: "多读错误 (Insert)",
@@ -148,8 +172,17 @@ def generate_error_wordclouds(
             print(f"[词云] {category_labels[category]}: 无数据，跳过")
             continue
 
-        # 统计词频
         word_freq = Counter(words)
+        before_count = len(word_freq)
+        # 再次过滤（防御性：确保停用词不在 Counter 中）
+        word_freq = Counter(
+            {w: c for w, c in word_freq.items()
+             if w not in stopwords_set and len(w) > 1}
+        )
+        after_count = len(word_freq)
+        if before_count > after_count:
+            print(f"[词云] {category_labels[category]}: "
+                  f"过滤掉 {before_count - after_count} 个停用词/短词")
 
         output_path = os.path.join(output_dir, f"wordcloud_{category}.png")
         _render_wordcloud(
@@ -159,42 +192,46 @@ def generate_error_wordclouds(
             output_path=output_path,
         )
         output_paths[category] = output_path
-        print(f"[词云] {category_labels[category]}: {len(word_freq)} 个不同词 → {output_path}")
+        print(f"[词云] {category_labels[category]}: "
+              f"{len(word_freq)} 个词 → {output_path}")
 
-    # ---- 3. 生成三合一拼接图 ----
-    if len(output_paths) >= 2:
-        combined_path = os.path.join(output_dir, "wordcloud_combined.png")
-        _render_combined_wordclouds(output_paths, combined_path)
-        output_paths["combined"] = combined_path
+    # ---- 4. 生成三合一合计词云 ----
+    if all_words:
+        all_freq = Counter(all_words)
+        all_freq = Counter(
+            {w: c for w, c in all_freq.items()
+             if w not in stopwords_set and len(w) > 1}
+        )
+        all_path = os.path.join(output_dir, "wordcloud_all.png")
+        _render_wordcloud(
+            word_freq=all_freq,
+            title="全部错误汇总 (All Errors)",
+            color=_config.wordcloud.color_all,
+            output_path=all_path,
+        )
+        output_paths["all"] = all_path
+        print(f"[词云] 全部错误汇总: {len(all_freq)} 个词 → {all_path}")
 
     return output_paths
 
 
 def _find_chinese_font_path() -> str | None:
-    """
-    在系统中查找可用的中文字体文件路径。
-
-    返回:
-        字体 .ttf 文件路径，未找到则返回 None
-    """
-    # 常见中文字体路径
+    """在系统中查找可用的中文字体文件路径。"""
     candidates = [
-        "C:/Windows/Fonts/simhei.ttf",         # 黑体 (Windows)
-        "C:/Windows/Fonts/msyh.ttc",            # 微软雅黑 (Windows)
-        "C:/Windows/Fonts/simsun.ttc",          # 宋体 (Windows)
-        "C:/Windows/Fonts/simkai.ttf",          # 楷体 (Windows)
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",  # Linux
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",  # Linux
-        "/System/Library/Fonts/PingFang.ttc",   # macOS
+        "C:/Windows/Fonts/simhei.ttf",
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simsun.ttc",
+        "C:/Windows/Fonts/simkai.ttf",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
     ]
     for path in candidates:
         if os.path.isfile(path):
             return path
 
-    # 回退：遍历 matplotlib 已知字体
     try:
-        import matplotlib.font_manager as _fm
-        for _f in _fm.fontManager.ttflist:
+        for _f in fm.fontManager.ttflist:
             if any(kw in _f.name.lower() for kw in
                    ("simhei", "yahei", "simsun", "simkai", "cjk", "wqy",
                     "pingfang", "noto sans", "wenquan")):
@@ -213,6 +250,8 @@ def _render_wordcloud(
     """
     使用 wordcloud 库渲染单张词云图。
 
+    所有样式参数从 _config.wordcloud 读取，停用词已在调用前过滤。
+
     参数:
         word_freq:   词 → 频次映射
         title:       图表标题
@@ -226,23 +265,23 @@ def _render_wordcloud(
         _render_fallback_wordcloud(word_freq, title, color, output_path)
         return
 
-    # 创建词云（尝试使用中文字体）
+    wc_config = _config.wordcloud
     font_path = _find_chinese_font_path()
     if font_path:
         print(f"[词云] 使用字体: {font_path}")
+
     wc = WordCloud(
-        width=800,
-        height=600,
-        background_color="white",
+        width=wc_config.width,
+        height=wc_config.height,
+        background_color=wc_config.background_color,
         color_func=lambda *args, **kwargs: color,
-        max_words=100,
+        max_words=wc_config.max_words,
         collocations=False,
-        font_path=font_path,  # 中文字体路径（None 则使用默认）
-        prefer_horizontal=0.7,
+        font_path=font_path,
+        prefer_horizontal=wc_config.prefer_horizontal,
     )
     wc.generate_from_frequencies(word_freq)
 
-    # 渲染
     fig, ax = plt.subplots(figsize=(10, 7.5))
     ax.imshow(wc, interpolation="bilinear")
     ax.set_title(title, fontsize=16, fontweight="bold", pad=15)
@@ -258,9 +297,7 @@ def _render_fallback_wordcloud(
     color: str,
     output_path: str,
 ) -> None:
-    """
-    wordcloud 库不可用时的回退方案：横向柱状图展示 Top 20 高频词。
-    """
+    """wordcloud 库不可用时的回退方案：横向柱状图展示 Top 20 高频词。"""
     top_words = word_freq.most_common(20)
     if not top_words:
         return
@@ -280,70 +317,48 @@ def _render_fallback_wordcloud(
     plt.close(fig)
 
 
-def _render_combined_wordclouds(
-    output_paths: dict[str, str],
-    combined_path: str,
-) -> None:
-    """将多张词云图水平拼接为一张大图。"""
-    valid_paths = [p for p in output_paths.values() if os.path.exists(p)]
-    if len(valid_paths) < 2:
-        return
-
-    fig, axes = plt.subplots(1, len(valid_paths), figsize=(6 * len(valid_paths), 5))
-    if len(valid_paths) == 1:
-        axes = [axes]
-
-    for ax, path in zip(axes, valid_paths):
-        img = plt.imread(path)
-        ax.imshow(img)
-        ax.axis("off")
-
-    fig.tight_layout()
-    fig.savefig(combined_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-
 # ==============================================================================
-# 历史进步曲线
+# 历史进步曲线 — 每位学生一张独立图
 # ==============================================================================
 
 def generate_progress_curves(
     history_dir: str,
-    output_path: str = "",
-) -> str:
+    output_dir: str = "",
+) -> list[str]:
     """
-    读取 history_dir 下所有归档的 summary.csv，为每位学生绘制
-    准确率 + 语音综合分随时间变化的折线图。
+    读取 history_dir 下所有归档的 summary.csv，为每位学生生成一张
+    独立的折线图（3 条线：准确率/语音综合分/总成绩），
+    统一输出到 progress_curves/ 子目录，覆盖上一次生成的结果。
 
     参数:
         history_dir: resource/result/history/ 目录路径
-        output_path: 输出图片路径（为空则默认 history_dir/../error_analysis/progress_curves.png）
+        output_dir:  输出目录（为空则默认 history_dir/../error_analysis/progress_curves/）
 
     返回:
-        输出图片的绝对路径
+        生成的 PNG 文件路径列表
     """
-    if not output_path:
-        output_path = os.path.join(
-            os.path.dirname(history_dir), "error_analysis", "progress_curves.png"
+    if not output_dir:
+        output_dir = os.path.join(
+            os.path.dirname(history_dir), "error_analysis", "progress_curves"
         )
-    ensure_dir(os.path.dirname(output_path))
+    # 清除旧输出后重建（确保覆盖）
+    if os.path.isdir(output_dir):
+        shutil.rmtree(output_dir)
+    ensure_dir(output_dir)
 
     # ---- 1. 收集所有归档文件 ----
     archive_files = sorted(
         [f for f in os.listdir(history_dir) if f.endswith("_summary.csv")],
     )
-    if len(archive_files) < 2:
-        print(f"[历史曲线] 归档文件不足（需要至少 2 次运行，当前 {len(archive_files)} 次），跳过")
-        # 即使只有一次也生成（显示当前分数）
-        if len(archive_files) == 0:
-            return ""
+    if not archive_files:
+        print("[历史曲线] 无归档文件，跳过")
+        return []
 
     print(f"[历史曲线] 找到 {len(archive_files)} 次历史运行记录")
 
     # ---- 2. 合并所有历史数据 ----
     all_records: list[dict] = []
     for filename in archive_files:
-        # 从文件名提取时间戳: {YYYY-MM-DD_HHMMSS}_summary.csv
         timestamp_str = filename.replace("_summary.csv", "")
         try:
             run_time = datetime.strptime(timestamp_str, "%Y-%m-%d_%H%M%S")
@@ -357,82 +372,74 @@ def generate_progress_curves(
             continue
 
         for _, row in df.iterrows():
-            record = {
+            all_records.append({
                 "学生": str(row.get("学生", "")),
                 "时间": run_time,
                 "单词准确率": _parse_percent(row.get("单词准确率", "0%")),
                 "语音综合分": _parse_float(row.get("语音综合分", 0)),
                 "总成绩": _parse_float(row.get("总成绩", 0)),
-            }
-            all_records.append(record)
+            })
 
     if not all_records:
         print("[历史曲线] 无有效数据，跳过")
-        return ""
+        return []
 
     df_all = pd.DataFrame(all_records)
     students = sorted(df_all["学生"].unique())
+    output_paths: list[str] = []
 
-    # ---- 3. 绘制每位学生的子图 ----
-    n_students = len(students)
-    n_cols = min(3, n_students)
-    n_rows = (n_students + n_cols - 1) // n_cols
-
-    fig, axes = plt.subplots(
-        n_rows, n_cols,
-        figsize=(6 * n_cols, 4 * n_rows),
-        squeeze=False,
-    )
-
-    for i, student in enumerate(students):
-        row, col = i // n_cols, i % n_cols
-        ax = axes[row][col]
-
+    # ---- 3. 为每位学生生成独立折线图 ----
+    for student in students:
         student_data = df_all[df_all["学生"] == student].sort_values("时间")
+        n_runs = len(student_data)
 
-        if len(student_data) < 2:
-            # 只有一次数据：显示为散点
+        # 文件名去空格和特殊字符
+        safe_name = student.replace(" ", "_").replace("/", "_")
+        out_path = os.path.join(output_dir, f"{safe_name}_progress.png")
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        if n_runs == 1:
+            # 仅一次记录：标注无法绘制趋势
             for _, point in student_data.iterrows():
-                ax.scatter(point["时间"], point["单词准确率"] * 100, color="#1976d2", s=60, zorder=5)
-                ax.scatter(point["时间"], point["语音综合分"], color="#388e3c", s=60, zorder=5)
-                ax.scatter(point["时间"], point["总成绩"], color="#d32f2f", s=60, zorder=5)
+                ax.scatter(point["时间"], point["单词准确率"] * 100,
+                          color="#1976d2", s=80, zorder=5)
+                ax.scatter(point["时间"], point["语音综合分"],
+                          color="#388e3c", s=80, zorder=5)
+                ax.scatter(point["时间"], point["总成绩"],
+                          color="#d32f2f", s=80, zorder=5)
+            title = f"{student}（仅 1 次记录，无趋势）"
         else:
             times = student_data["时间"].tolist()
-            ax.plot(times, student_data["单词准确率"] * 100, "o-", color="#1976d2",
-                    linewidth=2, markersize=6, label="单词准确率 (%)")
-            ax.plot(times, student_data["语音综合分"], "s-", color="#388e3c",
-                    linewidth=2, markersize=6, label="语音综合分")
-            ax.plot(times, student_data["总成绩"], "^-", color="#d32f2f",
-                    linewidth=2, markersize=6, label="总成绩")
+            ax.plot(times, student_data["单词准确率"] * 100, "o-",
+                    color="#1976d2", linewidth=2, markersize=6,
+                    label="单词准确率 (%)")
+            ax.plot(times, student_data["语音综合分"], "s-",
+                    color="#388e3c", linewidth=2, markersize=6,
+                    label="语音综合分")
+            ax.plot(times, student_data["总成绩"], "^-",
+                    color="#d32f2f", linewidth=2, markersize=6,
+                    label="总成绩")
+            title = f"{student}（{n_runs} 次运行）"
 
-        ax.set_title(student, fontsize=11, fontweight="bold")
-        ax.set_ylabel("分数", fontsize=9)
+        ax.set_title(title, fontsize=13, fontweight="bold")
+        ax.set_ylabel("分数", fontsize=10)
         ax.grid(True, alpha=0.3)
         ax.set_ylim(0, 105)
+        if n_runs > 1:
+            ax.legend(loc="lower left", fontsize=9)
 
-        # 旋转 X 轴标签防止重叠
         for label in ax.get_xticklabels():
             label.set_rotation(30)
             label.set_fontsize(8)
 
-    # 隐藏多余的子图
-    for i in range(n_students, n_rows * n_cols):
-        row, col = i // n_cols, i % n_cols
-        axes[row][col].set_visible(False)
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        output_paths.append(out_path)
 
-    # 统一图例
-    if n_students > 0:
-        handles, labels = axes[0][0].get_legend_handles_labels()
-        if handles:
-            fig.legend(handles, labels, loc="lower center", ncol=3, fontsize=10)
-
-    fig.suptitle("学生仿读成绩历史趋势", fontsize=16, fontweight="bold", y=1.01)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-    print(f"[历史曲线] {n_students} 名学生趋势图已保存: {output_path}")
-    return output_path
+    print(f"[历史曲线] {len(students)} 名学生各一张图 → {output_dir}/")
+    return output_paths
 
 
 # ==============================================================================
@@ -441,21 +448,42 @@ def generate_progress_curves(
 
 def archive_current_result(summary_csv: str, history_dir: str) -> str:
     """
-    将当前 summary.csv 归档到 history_dir，文件名带时间戳。
+    将当前 summary.csv 归档到 history_dir，同时写入 meta.json。
+
+    meta.json 记录本次运行的基本信息，供历史曲线模块分类和过滤使用。
 
     参数:
         summary_csv: 当前 resource/result/summary.csv 路径
         history_dir: 归档目录
 
     返回:
-        归档后的文件路径
+        归档后的 CSV 文件路径
     """
     ensure_dir(history_dir)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+
+    # 复制 summary.csv
     archive_name = f"{timestamp}_summary.csv"
     archive_path = os.path.join(history_dir, archive_name)
     shutil.copy2(summary_csv, archive_path)
     print(f"[归档] summary.csv → {archive_path}")
+
+    # 写入 meta.json
+    try:
+        df = pd.read_csv(summary_csv, encoding="utf-8-sig")
+        students = df["学生"].tolist() if "学生" in df.columns else []
+        meta = {
+            "timestamp": timestamp,
+            "student_count": len(students),
+            "students": students,
+        }
+        meta_path = os.path.join(history_dir, f"{timestamp}_meta.json")
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+        print(f"[归档] meta.json → {meta_path}")
+    except Exception as e:
+        print(f"[归档] meta.json 写入失败: {e}")
+
     return archive_path
 
 
@@ -515,7 +543,7 @@ def _main() -> None:
     # 历史曲线
     print("\n" + "=" * 60)
     print("生成历史进步曲线...")
-    generate_progress_curves(history_dir, os.path.join(output_dir, "progress_curves.png"))
+    generate_progress_curves(history_dir, output_dir)
 
 
 if __name__ == "__main__":
