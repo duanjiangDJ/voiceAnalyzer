@@ -5,14 +5,16 @@ error_visualizer.py — 错题可视化：词云 + 历史进步曲线
 
 功能:
     1. 错题词云：4 张图（替换/多读/漏读 + 三合一合计），
-       停用词过滤、全横向排列、参数可配置
-    2. 历史进步曲线：每位学生一张独立折线图，展示历次运行趋势
-    3. 结果归档：每次运行写入 history/ 并附带 meta.json
+       spaCy 词性还原（可选）、停用词过滤、按频次彩色渲染
+    2. CSV 导出：每种错误类型导出词频 CSV，支持 pandas 汇总
+    3. 历史进步曲线：每位学生一张独立折线图，展示历次运行趋势
+    4. 结果归档：每次运行写入 history/ 并附带 meta.json
 
 公共 API:
-    generate_error_wordclouds()  — 生成 4 张词云图
+    generate_error_wordclouds()  — 生成 4 张词云图 + CSV
     generate_progress_curves()   — 生成每位学生的历史曲线
     archive_current_result()     — 归档本次运行结果（含 meta.json）
+    lemmatize_word()             — spaCy 词性还原（供外部调用）
 
 数据来源:
     - 词云: 每位学生的 _errors.json（由 text_llm.py 生成）
@@ -21,6 +23,7 @@ error_visualizer.py — 错题可视化：词云 + 历史进步曲线
 依赖:
     - matplotlib, pandas, numpy (第三方)
     - wordcloud (第三方，需单独安装)
+    - spacy (可选，用于词性还原)
     - src.config: AppConfig (词云参数 + 停用词)
     - src.utils: ensure_dir, read_errors_json
     - src.constants: ERROR_TYPE_REPLACE, ERROR_TYPE_INSERT, ERROR_TYPE_DELETE, WORDCLOUD_COLORS
@@ -33,6 +36,7 @@ import shutil
 import sys
 from collections import Counter
 from datetime import datetime
+from pathlib import Path
 
 # 添加项目根目录到 path（支持独立运行）
 if __name__ == "__main__":
@@ -64,7 +68,6 @@ from src.constants import (
     ERROR_TYPE_DELETE,
     ERROR_TYPE_INSERT,
     ERROR_TYPE_REPLACE,
-    WORDCLOUD_COLORS,
 )
 from src.utils import ensure_dir, read_errors_json
 
@@ -73,146 +76,240 @@ _config = AppConfig.load()
 
 
 # ==============================================================================
-# 词云生成
+# spaCy 词性还原 — 懒加载 + 自动下载
 # ==============================================================================
 
-def generate_error_wordclouds(
-    result_dir: str,
-    output_dir: str = "",
-) -> dict[str, str]:
+_nlp = None
+"""spaCy 模型缓存：None=未初始化，spaCy模型实例=已加载，False=加载失败"""
+
+
+def get_spacy_nlp():
     """
-    解析 result_dir 下所有学生的 _errors.json，按错误类型生成 4 张词云图：
-      - wordcloud_replace.png : 替换错误
-      - wordcloud_insert.png  : 多读错误
-      - wordcloud_delete.png  : 漏读错误
-      - wordcloud_all.png     : 三种错误合计
+    懒加载 spaCy 英文模型 en_core_web_sm。
 
-    停用词（the/of/to 等）从 _config.wordcloud.stopwords 读取并过滤。
-    所有词强制横向排列（prefer_horizontal=1.0）。
-
-    参数:
-        result_dir: resource/result/ 目录路径
-        output_dir: 输出目录（默认: result_dir/error_analysis/）
+    首次调用时自动检测并加载模型；若模型未安装则尝试自动下载。
+    加载失败时返回 None，调用方应降级为原词统计。
 
     返回:
-        {"replace": path, "insert": path, "delete": path, "all": path}
+        spaCy Language 对象，或 None（加载失败时）
     """
-    if not output_dir:
-        output_dir = os.path.join(result_dir, "error_analysis")
-    ensure_dir(output_dir)
+    global _nlp
+    if _nlp is not None:
+        return _nlp if _nlp is not False else None
 
-    # ---- 1. 收集所有学生的错误数据 ----
-    error_words: dict[str, list[str]] = {
+    try:
+        import spacy
+        try:
+            _nlp = spacy.load("en_core_web_sm")
+        except OSError:
+            print("[词云] 正在下载 spaCy 英文模型 (en_core_web_sm) ...")
+            import subprocess
+            subprocess.run(
+                [sys.executable, "-m", "spacy", "download", "en_core_web_sm"],
+                check=True,
+            )
+            _nlp = spacy.load("en_core_web_sm")
+        print("[词云] spaCy 模型加载成功")
+    except ImportError:
+        print("[词云] ⚠️  spaCy 未安装，将跳过词性还原。"
+              "安装方法: pip install spacy && python -m spacy download en_core_web_sm")
+        _nlp = False
+    except Exception as e:
+        print(f"[词云] ⚠️  spaCy 加载失败: {e}，将跳过词性还原")
+        _nlp = False
+
+    return _nlp if _nlp is not False else None
+
+
+def lemmatize_word(word: str) -> str:
+    """
+    对单个单词进行词性还原（running→run, cats→cat, studied→study）。
+
+    对代词、限定词、介词、连词等虚词保留原形，避免过度还原。
+    spaCy 不可用时降级为小写转换。
+
+    参数:
+        word: 原始单词
+
+    返回:
+        还原后的词元（小写），或原词小写（spaCy 不可用时）
+    """
+    if not word or len(word) < 2:
+        return word.lower() if word else word
+
+    nlp = get_spacy_nlp()
+    if nlp is None:
+        return word.lower()
+
+    try:
+        doc = nlp(word)
+        if doc and len(doc) > 0:
+            lemma = doc[0].lemma_
+            # 虚词保留原形，避免过度还原
+            if doc[0].pos_ in ("PRON", "DET", "ADP", "CONJ", "SCONJ", "PART"):
+                return word.lower()
+            return lemma.lower() if lemma else word.lower()
+    except Exception:
+        pass
+    return word.lower()
+
+
+# ==============================================================================
+# 停用词加载 — 支持文件路径和 YAML 列表两种模式
+# ==============================================================================
+
+def load_stopwords_from_file(config, project_root: Path | None = None) -> set:
+    """
+    加载停用词集合。
+
+    支持两种模式：
+      - YAML 列表：config.wordcloud.stopwords 为 list[str]，直接解析
+      - 文件路径：config.wordcloud.stopwords 为 str，从该文件逐行读取（支持 # 注释）
+
+    同时合并 wordcloud 库内置的 STOPWORDS（如果可用）。
+
+    参数:
+        config:       AppConfig 实例
+        project_root: 项目根目录（用于解析相对路径），为 None 时自动检测
+
+    返回:
+        停用词集合（全部小写）
+    """
+    try:
+        from wordcloud import STOPWORDS
+        default_stopwords = set(STOPWORDS)
+    except ImportError:
+        default_stopwords = set()
+
+    if project_root is None:
+        current_file = Path(__file__).resolve()
+        project_root = current_file.parent.parent
+
+    stopwords_source = config.wordcloud.stopwords
+
+    if isinstance(stopwords_source, str):
+        # 文件路径模式
+        stopwords_path = project_root / stopwords_source
+        custom_stopwords = set()
+        try:
+            if stopwords_path.exists():
+                with open(stopwords_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        word = line.strip().lower()
+                        if word and not word.startswith("#"):
+                            custom_stopwords.add(word)
+                print(f"[词云] 从文件加载 {len(custom_stopwords)} 个停用词: {stopwords_path}")
+        except Exception as e:
+            print(f"[词云] ⚠️  停用词文件加载失败: {e}")
+        return default_stopwords | custom_stopwords
+    else:
+        # YAML 列表模式
+        return set(w.lower() for w in stopwords_source) | default_stopwords
+
+
+# ==============================================================================
+# 错误词提取 — 从 _errors.json 中提取真实错误单词
+# ==============================================================================
+
+def extract_error_words_from_json(errors_data: dict | None) -> dict[str, list[str]]:
+    """
+    从错误 JSON 数据中提取按类别分类的错误单词列表。
+
+    支持多种字段名（transcribed, standard, word, text, error_word, expected），
+    自动处理嵌套字典情况。
+
+    参数:
+        errors_data: read_errors_json() 返回的字典，或 None
+
+    返回:
+        {"replace": [...], "insert": [...], "delete": [...]}
+    """
+    result: dict[str, list[str]] = {
         ERROR_TYPE_REPLACE: [],
         ERROR_TYPE_INSERT: [],
         ERROR_TYPE_DELETE: [],
     }
-    all_words: list[str] = []
 
-    stopwords_set = set(w.lower() for w in _config.wordcloud.stopwords)
-    student_count = 0
+    if not errors_data:
+        return result
 
-    for item in os.listdir(result_dir):
-        student_dir = os.path.join(result_dir, item)
-        if not os.path.isdir(student_dir):
-            continue
-        if item in ("history", "error_analysis", "progress_curves"):
-            continue
-
-        for f in os.listdir(student_dir):
-            if f.endswith("_errors.json"):
-                json_path = os.path.join(student_dir, f)
-                errors_data = read_errors_json(json_path)
-                if errors_data is None:
-                    continue
-                errors = errors_data.get("errors", {})
-                for category in ERROR_CATEGORIES:
-                    err_list = errors.get(category, [])
-                    for err in err_list:
-                        if isinstance(err, dict):
-                            word = err.get(
-                                "transcribed",
-                                err.get("standard",
-                                        err.get("word", ""))
-                            )
-                        elif isinstance(err, str):
-                            word = err
-                        else:
-                            continue
-                        word = word.strip().lower()
-                        if word and len(word) > 1 and word not in stopwords_set:
-                            error_words[category].append(word)
-                            all_words.append(word)
-                student_count += 1
-                break
-
-    print(f"[词云] 共读取 {student_count} 名学生的错误数据")
-
-    # ---- 2. 打印停用词过滤统计 ----
-    stopwords_filtered = 0
-    for category in ERROR_CATEGORIES:
-        raw = error_words[category]
-        # 停用词已在上面的循环中过滤，此处仅打印
-    if stopwords_set:
-        print(f"[词云] 停用词列表 ({len(stopwords_set)} 个): "
-              f"{', '.join(sorted(list(stopwords_set)[:10]))}...")
-
-    # ---- 3. 生成 3 张分类词云 + 1 张三合一 ----
-    category_labels = {
-        ERROR_TYPE_REPLACE: "替换错误 (Replace)",
-        ERROR_TYPE_INSERT: "多读错误 (Insert)",
-        ERROR_TYPE_DELETE: "漏读错误 (Delete)",
-    }
-
-    output_paths: dict[str, str] = {}
+    errors = errors_data.get("errors", {})
 
     for category in ERROR_CATEGORIES:
-        words = error_words[category]
-        if not words:
-            print(f"[词云] {category_labels[category]}: 无数据，跳过")
-            continue
+        err_list = errors.get(category, [])
+        for err in err_list:
+            word = None
+            if isinstance(err, dict):
+                # 按优先级尝试多种可能的字段名
+                word = (
+                    err.get("transcribed")
+                    or err.get("standard")
+                    or err.get("word")
+                    or err.get("text")
+                    or err.get("error_word")
+                    or err.get("expected")
+                )
+                # 如果 word 本身是嵌套字典，尝试提取值
+                if isinstance(word, dict):
+                    word = word.get("word", word.get("text", str(word)))
+            elif isinstance(err, str):
+                word = err
+            else:
+                continue
 
-        word_freq = Counter(words)
-        before_count = len(word_freq)
-        # 再次过滤（防御性：确保停用词不在 Counter 中）
-        word_freq = Counter(
-            {w: c for w, c in word_freq.items()
-             if w not in stopwords_set and len(w) > 1}
-        )
-        after_count = len(word_freq)
-        if before_count > after_count:
-            print(f"[词云] {category_labels[category]}: "
-                  f"过滤掉 {before_count - after_count} 个停用词/短词")
+            if word and isinstance(word, str):
+                word = word.strip().lower()
+                if word and len(word) > 1:
+                    result[category].append(word)
 
-        output_path = os.path.join(output_dir, f"wordcloud_{category}.png")
-        _render_wordcloud(
-            word_freq=word_freq,
-            title=category_labels[category],
-            color=WORDCLOUD_COLORS.get(category, "#333333"),
-            output_path=output_path,
-        )
-        output_paths[category] = output_path
-        print(f"[词云] {category_labels[category]}: "
-              f"{len(word_freq)} 个词 → {output_path}")
+    return result
 
-    # ---- 4. 生成三合一合计词云 ----
-    if all_words:
-        all_freq = Counter(all_words)
-        all_freq = Counter(
-            {w: c for w, c in all_freq.items()
-             if w not in stopwords_set and len(w) > 1}
-        )
-        all_path = os.path.join(output_dir, "wordcloud_all.png")
-        _render_wordcloud(
-            word_freq=all_freq,
-            title="全部错误汇总 (All Errors)",
-            color=_config.wordcloud.color_all,
-            output_path=all_path,
-        )
-        output_paths["all"] = all_path
-        print(f"[词云] 全部错误汇总: {len(all_freq)} 个词 → {all_path}")
 
-    return output_paths
+# ==============================================================================
+# 词云渲染 — 频次彩色渲染 + 单色回退
+# ==============================================================================
+
+def get_color_func(word_freq: Counter):
+    """
+    根据词频生成颜色映射函数。
+
+    高频词使用暖色（红/橙），低频词使用冷色（蓝/紫），
+    视觉上直观区分错误严重程度。
+
+    参数:
+        word_freq: 词→频次 Counter
+
+    返回:
+        color_func 回调（供 WordCloud 使用）
+    """
+    if not word_freq:
+        return lambda *args, **kwargs: "#455a64"
+
+    max_freq = max(word_freq.values())
+    min_freq = min(word_freq.values())
+    range_freq = max_freq - min_freq if max_freq > min_freq else 1
+
+    # 颜色梯度：暖色(高频) → 冷色(低频)
+    colors = [
+        "#e74c3c",  # 红色 (最高频)
+        "#e67e22",  # 橙色
+        "#f1c40f",  # 黄色
+        "#2ecc71",  # 绿色
+        "#3498db",  # 蓝色
+        "#9b59b6",  # 紫色
+        "#1abc9c",  # 青色
+        "#e84393",  # 粉色
+    ]
+
+    def color_func(word, _font_size, _position, _orientation,
+                   _random_state=None, **_kwargs):
+        freq = word_freq.get(word, 1)
+        normalized = (freq - min_freq) / range_freq
+        idx = int(normalized * (len(colors) - 1))
+        idx = min(idx, len(colors) - 1)
+        return colors[idx]
+
+    return color_func
 
 
 def _find_chinese_font_path() -> str | None:
@@ -248,7 +345,7 @@ def _render_wordcloud(
     output_path: str,
 ) -> None:
     """
-    使用 wordcloud 库渲染单张词云图。
+    使用 wordcloud 库渲染单张词云图（单色模式，保留作为回退）。
 
     所有样式参数从 _config.wordcloud 读取，停用词已在调用前过滤。
 
@@ -293,6 +390,86 @@ def _render_wordcloud(
     plt.close(fig)
 
 
+def _render_wordcloud_colorful(
+    word_freq: Counter,
+    title: str,
+    output_path: str,
+    background_color: str = "white",
+    max_words: int | None = None,
+) -> None:
+    """
+    使用频次彩色渲染生成词云图（当前默认渲染方式）。
+
+    高频词用暖色调、低频词用冷色调，并附加统计文本框。
+    样式参数优先使用 _config.wordcloud 的值。
+
+    参数:
+        word_freq:        词 → 频次映射
+        title:            图表标题
+        output_path:      输出 PNG 路径
+        background_color: 背景色
+        max_words:        最大单词数（None=使用配置值）
+    """
+    try:
+        from wordcloud import WordCloud
+    except ImportError:
+        print("[词云] wordcloud 库未安装，回退到 matplotlib 替代方案")
+        _render_fallback_wordcloud(word_freq, title, "#455a64", output_path)
+        return
+
+    if not word_freq:
+        print("[词云] 无数据，跳过")
+        return
+
+    wc_config = _config.wordcloud
+    if max_words is None:
+        max_words = wc_config.max_words
+
+    font_path = _find_chinese_font_path()
+
+    # 获取频次颜色函数
+    color_func = get_color_func(word_freq)
+
+    wc = WordCloud(
+        width=wc_config.width,
+        height=wc_config.height,
+        background_color=background_color,
+        color_func=color_func,
+        max_words=max_words,
+        max_font_size=wc_config.max_font_size or 150,
+        min_font_size=wc_config.min_font_size,
+        collocations=False,
+        font_path=font_path,
+        prefer_horizontal=wc_config.prefer_horizontal,
+        random_state=42,
+        scale=1.5,
+        contour_width=1,
+        contour_color="#bdc3c7",
+    )
+    wc.generate_from_frequencies(word_freq)
+
+    fig, ax = plt.subplots(figsize=(14, 10))
+    ax.imshow(wc, interpolation="bilinear")
+    ax.set_title(title, fontsize=20, fontweight="bold", pad=20, color="#2c3e50")
+    ax.axis("off")
+
+    # 统计信息文本框
+    ax.text(
+        0.98, 0.02,
+        f"共 {len(word_freq)} 个不同单词\n最高频: {max(word_freq.values())} 次",
+        transform=ax.transAxes,
+        fontsize=10,
+        verticalalignment="bottom",
+        horizontalalignment="right",
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+    )
+
+    plt.tight_layout(pad=0)
+    fig.savefig(output_path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    print(f"[词云] 已生成: {output_path}")
+
+
 def _render_fallback_wordcloud(
     word_freq: Counter,
     title: str,
@@ -317,6 +494,204 @@ def _render_fallback_wordcloud(
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+
+# ==============================================================================
+# CSV 导出 — 错误单词 + 频次
+# ==============================================================================
+
+def export_errors_to_csv(
+    error_words: dict[str, list[str]],
+    output_path: str,
+) -> str:
+    """
+    将按类别分类的错误单词导出为单个汇总 CSV 文件。
+
+    CSV 包含三列：错误单词、频次、错误类型，按错误类型分组、
+    频次降序排列。
+
+    参数:
+        error_words: {"replace": [...], "insert": [...], "delete": [...]}
+        output_path: CSV 输出路径
+
+    返回:
+        写入的 CSV 路径，无数据时返回空字符串
+    """
+    if not error_words:
+        print("[导出] 无错误数据，跳过")
+        return ""
+
+    records = []
+    for error_type, words in error_words.items():
+        word_freq = Counter(words)
+        for word, count in word_freq.most_common():
+            records.append({
+                "错误单词": word,
+                "频次": count,
+                "错误类型": error_type,
+            })
+
+    if not records:
+        return ""
+
+    df = pd.DataFrame(records)
+    df = df.sort_values(["错误类型", "频次"], ascending=[True, False])
+
+    ensure_dir(os.path.dirname(output_path))
+    df.to_csv(output_path, index=False, encoding="utf-8-sig")
+    print(f"[导出] 错误汇总 CSV: {output_path} ({len(df)} 条)")
+    return output_path
+
+
+# ==============================================================================
+# 词云生成（主函数）
+# ==============================================================================
+
+def generate_error_wordclouds(
+    result_dir: str,
+    output_dir: str = "",
+    export_csv: bool = True,
+) -> dict[str, str]:
+    """
+    解析 result_dir 下所有学生的 _errors.json，生成 4 张词云图 + CSV 汇总。
+
+    处理流程：
+      1. 收集所有 _errors.json → 提取错误单词
+      2. spaCy 词性还原（可通过 config 开关控制）
+      3. 停用词过滤
+      4. 按频次彩色渲染生成 4 张词云图
+      5. 导出错误汇总 CSV
+
+    生成文件：
+      - wordcloud_replace.png  : 替换错误词云
+      - wordcloud_insert.png   : 多读错误词云
+      - wordcloud_delete.png   : 漏读错误词云
+      - wordcloud_all.png      : 三合一汇总词云
+      - error_summary.csv      : 所有错误单词 + 频次 + 类型
+
+    参数:
+        result_dir: resource/result/ 目录路径
+        output_dir: 输出目录（默认: result_dir/error_analysis/）
+        export_csv: 是否导出 CSV（默认 True）
+
+    返回:
+        {"replace": path, "insert": path, "delete": path, "all": path}
+    """
+    if not output_dir:
+        output_dir = os.path.join(result_dir, "error_analysis")
+    ensure_dir(output_dir)
+
+    # ---- 1. 加载停用词 ----
+    project_root = Path(result_dir).parent.parent
+    stopwords_set = load_stopwords_from_file(_config, project_root)
+
+    # ---- 2. 收集所有学生的错误数据 ----
+    error_words: dict[str, list[str]] = {
+        ERROR_TYPE_REPLACE: [],
+        ERROR_TYPE_INSERT: [],
+        ERROR_TYPE_DELETE: [],
+    }
+    all_words: list[str] = []
+
+    student_count = 0
+    total_errors = 0
+    filtered_errors = 0
+
+    for item in os.listdir(result_dir):
+        student_dir = os.path.join(result_dir, item)
+        if not os.path.isdir(student_dir):
+            continue
+        if item in ("history", "error_analysis", "progress_curves"):
+            continue
+
+        for f in os.listdir(student_dir):
+            if f.endswith("_errors.json"):
+                json_path = os.path.join(student_dir, f)
+                errors_data = read_errors_json(json_path)
+                if errors_data is None:
+                    continue
+
+                # 使用增强的错误词提取函数
+                student_errors = extract_error_words_from_json(errors_data)
+
+                for category in ERROR_CATEGORIES:
+                    for word in student_errors.get(category, []):
+                        total_errors += 1
+                        # spaCy 词性还原
+                        lemma = lemmatize_word(word)
+                        if lemma and len(lemma) > 1 and lemma not in stopwords_set:
+                            error_words[category].append(lemma)
+                            all_words.append(lemma)
+                            filtered_errors += 1
+
+                student_count += 1
+                break
+
+    print(f"[词云] 共读取 {student_count} 名学生的错误数据")
+    print(f"[词云] 错误词: {total_errors} → {filtered_errors} (过滤后)")
+
+    if stopwords_set and isinstance(_config.wordcloud.stopwords, list):
+        print(f"[词云] 停用词 ({len(stopwords_set)} 个)")
+
+    # ---- 3. 导出 CSV ----
+    if export_csv:
+        csv_path = os.path.join(output_dir, "error_summary.csv")
+        export_errors_to_csv(error_words, csv_path)
+
+    # ---- 4. 生成 3 张分类词云 + 1 张三合一 ----
+    category_labels = {
+        ERROR_TYPE_REPLACE: "替换错误 (Replace)",
+        ERROR_TYPE_INSERT: "多读错误 (Insert)",
+        ERROR_TYPE_DELETE: "漏读错误 (Delete)",
+    }
+
+    output_paths: dict[str, str] = {}
+
+    for category in ERROR_CATEGORIES:
+        words = error_words[category]
+        if not words:
+            print(f"[词云] {category_labels[category]}: 无数据，跳过")
+            continue
+
+        word_freq = Counter(words)
+        # 防御性过滤（再次确保停用词不在 Counter 中）
+        word_freq = Counter(
+            {w: c for w, c in word_freq.items()
+             if w not in stopwords_set and len(w) > 1}
+        )
+
+        if not word_freq:
+            continue
+
+        output_path = os.path.join(output_dir, f"wordcloud_{category}.png")
+        _render_wordcloud_colorful(
+            word_freq=word_freq,
+            title=category_labels[category],
+            output_path=output_path,
+        )
+        output_paths[category] = output_path
+        print(f"[词云] {category_labels[category]}: "
+              f"{len(word_freq)} 个词 → {output_path}")
+
+    # ---- 5. 生成三合一汇总词云 ----
+    if all_words:
+        all_freq = Counter(all_words)
+        all_freq = Counter(
+            {w: c for w, c in all_freq.items()
+             if w not in stopwords_set and len(w) > 1}
+        )
+        if all_freq:
+            all_path = os.path.join(output_dir, "wordcloud_all.png")
+            _render_wordcloud_colorful(
+                word_freq=all_freq,
+                title="全部错误汇总 (All Errors)",
+                output_path=all_path,
+                max_words=300,
+            )
+            output_paths["all"] = all_path
+            print(f"[词云] 全部错误汇总: {len(all_freq)} 个词 → {all_path}")
+
+    return output_paths
 
 
 # ==============================================================================
@@ -534,6 +909,10 @@ def _main() -> None:
         "--history-dir", default="",
         help="历史归档目录（默认: result_dir/history/）"
     )
+    parser.add_argument(
+        "--no-csv", action="store_true",
+        help="不导出 CSV 频次文件"
+    )
     args = parser.parse_args()
 
     result_dir = args.result_dir
@@ -543,7 +922,7 @@ def _main() -> None:
     # 词云
     print("=" * 60)
     print("生成错题词云...")
-    generate_error_wordclouds(result_dir, output_dir)
+    generate_error_wordclouds(result_dir, output_dir, export_csv=not args.no_csv)
 
     # 历史曲线
     print("\n" + "=" * 60)
