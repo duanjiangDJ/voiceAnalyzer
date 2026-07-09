@@ -34,6 +34,9 @@ class LLMConfig:
     thinking: bool = True
     max_concurrency: int = 400
     timeout: int = 120
+    max_tokens: int = 8192
+    """单次响应最大 token 数（含思考模式 reasoning）。
+    建议由 tools/benchmark_llm.py 实测 completion_tokens 峰值 ×1.3 回填。"""
 
 
 @dataclass
@@ -210,7 +213,8 @@ def _apply_yaml(cfg: AppConfig, data: dict) -> None:
     # --- llm ---
     llm_data = data.get("llm")
     if isinstance(llm_data, dict):
-        for key in ("api_base", "model", "thinking", "max_concurrency", "timeout"):
+        for key in ("api_base", "model", "thinking", "max_concurrency",
+                     "timeout", "max_tokens"):
             if key in llm_data:
                 val = llm_data[key]
                 # YAML 的 true/false 字符串 → Python bool
@@ -273,10 +277,11 @@ def _load_dotenv(dotenv_path: str, cfg: AppConfig) -> None:
         ("LLM_MODEL", "model"),
         ("LLM_MAX_CONCURRENCY", "max_concurrency"),
         ("LLM_TIMEOUT", "timeout"),
+        ("LLM_MAX_TOKENS", "max_tokens"),
     ]:
         val = os.environ.get(env_key, "").strip()
         if val:
-            if attr in ("max_concurrency", "timeout"):
+            if attr in ("max_concurrency", "timeout", "max_tokens"):
                 setattr(cfg.llm, attr, int(val) if val.isdigit() else getattr(cfg.llm, attr))
             else:
                 setattr(cfg.llm, attr, val)

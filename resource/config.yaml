@@ -14,6 +14,7 @@ llm:
   thinking: true          # DeepSeek 思考模式 (true=启用)
   max_concurrency: 400    # LLM 线程池最大并发数
   timeout: 120            # API 请求超时秒数
+  max_tokens: 131072        # 单次响应最大 token（含思考 reasoning）；避免失控生成与二次回退。由 benchmark 实测回填
 
 # ------------------------------------------------------------------------------
 # Whisper 模型配置
