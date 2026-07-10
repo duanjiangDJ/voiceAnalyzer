@@ -301,8 +301,7 @@ def get_color_func(word_freq: Counter):
         "#e84393",  # 粉色
     ]
 
-    def color_func(word, _font_size, _position, _orientation,
-                   _random_state=None, **_kwargs):
+    def color_func(word, *_args, **_kwargs):
         freq = word_freq.get(word, 1)
         normalized = (freq - min_freq) / range_freq
         idx = int(normalized * (len(colors) - 1))

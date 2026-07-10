@@ -249,9 +249,15 @@ def _apply_yaml(cfg: AppConfig, data: dict) -> None:
             if key in wc_data:
                 setattr(cfg.wordcloud, key, wc_data[key])
         if "stopwords" in wc_data:
-            cfg.wordcloud.stopwords = [str(w).strip().lower()
-                                       for w in wc_data["stopwords"]
-                                       if str(w).strip()]
+            value = wc_data["stopwords"]
+            if isinstance(value, str):
+                cfg.wordcloud.stopwords = [value.strip()] if value.strip() else []
+            elif isinstance(value, list):
+                cfg.wordcloud.stopwords = [str(w).strip().lower()
+                                           for w in value
+                                           if str(w).strip()]
+            else:
+                cfg.wordcloud.stopwords = []
 
 
 def _load_dotenv(dotenv_path: str, cfg: AppConfig) -> None:
