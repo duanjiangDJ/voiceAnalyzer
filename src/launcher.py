@@ -114,6 +114,12 @@ completed_rows: list = []
 completion_tracker: "CompletionTracker | None" = None
 """学生完成追踪器（voice + text 均 done 时触发汇总写入）"""
 
+_progress_cb = None
+"""UI 进度回调（命令行运行时为 None）。"""
+
+_progress_meta: dict = {}
+"""UI 进度事件附加元数据，如班级和单元。"""
+
 # ---- 三个线程池（在 main() 中初始化） ----
 voice_executor: ThreadPoolExecutor = None
 whisper_executor: ThreadPoolExecutor = None
@@ -197,7 +203,9 @@ def update_student_progress(name: str, **kwargs) -> None:
         if name not in students:
             students[name] = {}
         students[name].update(kwargs)
+        state_snapshot = students[name].copy()
         _save_progress_nolock()
+    _emit_progress("student_progress", student=name, state=state_snapshot)
 
 
 def _save_progress_nolock() -> None:
@@ -211,6 +219,35 @@ def _save_progress_nolock() -> None:
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(progress_data, f, ensure_ascii=False, indent=2)
     os.replace(tmp_path, progress_path)  # 原子替换（POSIX 语义）
+
+
+def _emit_progress(event_type: str, **payload) -> None:
+    """向 UI 发送进度事件；命令行模式下无动作。"""
+    if _progress_cb is None:
+        return
+    event = {
+        "type": event_type,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        **_progress_meta,
+        **payload,
+    }
+    try:
+        _progress_cb(event)
+    except Exception:
+        pass
+
+
+def _emit_stage(stage: str, status: str, current: int | None = None,
+                total: int | None = None, message: str = "") -> None:
+    """发送阶段进度事件。"""
+    _emit_progress(
+        "stage_progress",
+        stage=stage,
+        status=status,
+        current=current,
+        total=total,
+        message=message,
+    )
 
 
 def _build_summary_row(name: str, state: dict) -> dict:
@@ -409,6 +446,13 @@ def voice_task(
     # 通知 tracker + 检查该学生是否 voice+text 均完成
     completion_tracker.mark_voice(name)
     _maybe_write_summary(name)
+    # 发送语音分析进度更新（驱动前端进度条）
+    with _progress_lock:
+        _s = progress_data.get("students", {})
+        _vd = sum(1 for s in _s.values() if isinstance(s, dict) and s.get("voice") in ("done", "failed"))
+        _vt = len(_s)
+    _emit_stage("voice_analysis", "running" if _vd < _vt else "done",
+                current=_vd, total=_vt, message=f"{_vd}/{_vt} 完成")
 
 
 def whisper_loop(
@@ -446,6 +490,12 @@ def whisper_loop(
             print(f"  [Whisper] {name} 文字分析已完成，跳过。")
             completion_tracker.mark_text(name)
             _maybe_write_summary(name)
+            with _progress_lock:
+                _s = progress_data.get("students", {})
+                _td = sum(1 for s in _s.values() if isinstance(s, dict) and s.get("text") in ("done", "failed"))
+                _tt = len(_s)
+            _emit_stage("text_analysis", "running" if _td < _tt else "done",
+                        current=_td, total=_tt, message=f"{_td}/{_tt} 完成")
             continue
 
         # ---- 已转写，仅重跑 LLM ----
@@ -483,6 +533,12 @@ def whisper_loop(
         )
 
     print("  [Whisper] 全部学生转写任务已调度完毕。")
+    with _progress_lock:
+        _s = progress_data.get("students", {})
+        _wd = sum(1 for s in _s.values() if isinstance(s, dict) and s.get("text") in ("done", "transcribed", "failed"))
+        _wt = len(_s)
+    _emit_stage("whisper_transcribe", "done",
+                current=_wd, total=_wt, message=f"转写调度完毕 {_wd}/{_wt}")
 
 
 def _llm_task_with_callback(
@@ -562,12 +618,24 @@ def _llm_task_with_callback(
         # 无论成败，都标记 text 侧完成并尝试写 summary
         completion_tracker.mark_text(name)
         _maybe_write_summary(name)
+        # 发送文字分析进度更新（每个 LLM 任务完成后）
+        with _progress_lock:
+            _s = progress_data.get("students", {})
+            _td = sum(1 for s in _s.values() if isinstance(s, dict) and s.get("text") in ("done", "failed"))
+            _tt = len(_s)
+        _emit_stage("text_analysis", "running" if _td < _tt else "done",
+                    current=_td, total=_tt, message=f"{_td}/{_tt} 完成")
 
 
 # ==============================================================================
 # 主入口 — 8 阶段流水线
 # ==============================================================================
-def main() -> None:
+def main(class_id: str | None = None,
+         unit_id: str | None = None,
+         paths_override: dict | None = None,
+         progress_cb=None,
+         cancel_event=None,
+         pause_event=None) -> None:
     """
     主调度流程（8 阶段）：
       Phase 1: 标准文件发现 + 特征预计算
@@ -586,10 +654,14 @@ def main() -> None:
         completed_rows, \
         completion_tracker
     global voice_executor, whisper_executor, llm_executor
-    global _cached_std_features
+    global _cached_std_features, _progress_cb, _progress_meta
+
+    _progress_cb = progress_cb
+    _progress_meta = {"class_id": class_id, "unit_id": unit_id}
 
     time_total_start = time.time()
     print("=" * 50)
+    _emit_stage("init", "running", message="launcher 启动")
     print("launcher 启动 — 三线程池并行调度器")
     print(f"配置: OpenSMILE 1 | Whisper 1 | LLM {_config.llm.max_concurrency}")
     print(f"模块开关: voice={_config.modules.voice_analysis} "
@@ -600,11 +672,19 @@ def main() -> None:
     print("=" * 50)
 
     # ---- 目录初始化（使用配置路径） ----
-    base_dir = _config.paths.base_dir
-    standard_audio_dir = _config.paths.abs_path(_config.paths.standard_audio_dir)
-    standard_text_dir = _config.paths.abs_path(_config.paths.standard_text_dir)
-    imitation_audio_dir = _config.paths.abs_path(_config.paths.imitation_audio_dir)
-    result_dir = _config.paths.abs_path(_config.paths.result_dir)
+    paths_override = paths_override or {}
+    standard_audio_dir = paths_override.get(
+        "standard_audio_dir", _config.paths.abs_path(_config.paths.standard_audio_dir)
+    )
+    standard_text_dir = paths_override.get(
+        "standard_text_dir", _config.paths.abs_path(_config.paths.standard_text_dir)
+    )
+    imitation_audio_dir = paths_override.get(
+        "imitation_audio_dir", _config.paths.abs_path(_config.paths.imitation_audio_dir)
+    )
+    result_dir = paths_override.get(
+        "result_dir", _config.paths.abs_path(_config.paths.result_dir)
+    )
     summary_path = os.path.join(result_dir, "summary.csv")
     progress_path = os.path.join(result_dir, "progress.json")
 
@@ -614,12 +694,14 @@ def main() -> None:
     # Phase 1: 标准文件发现 + 特征预计算
     # =========================================================================
     print("\n[Phase 1] 标准文件发现 ...")
+    _emit_stage("standard_prepare", "running", message="标准文件发现")
 
     try:
         standard_audio = find_single_file(standard_audio_dir, AUDIO_EXTENSIONS)
         standard_text = find_single_file(standard_text_dir, "txt")
     except Exception as e:
         print(f"[错误] {e}")
+        _emit_stage("standard_prepare", "failed", message=str(e))
         sys.exit(1)
 
     print(f"  标准音频: {standard_audio}")
@@ -630,6 +712,7 @@ def main() -> None:
     _cached_std_features = precompute_standard_features(standard_audio)
     time_precompute = time.time() - time_start
     print(f"  标准音频特征预计算完成（耗时 {time_precompute:.1f}s）")
+    _emit_stage("standard_prepare", "done", message="标准音频特征预计算完成")
 
     # ---- 扫描仿读音频 ----
     imitation_files: list[str] = []
@@ -642,6 +725,7 @@ def main() -> None:
     ]
     if not imitation_files:
         print("未找到仿读音频文件。")
+        _emit_stage("student_scan", "failed", message="未找到仿读音频文件")
         sys.exit(0)
 
     # 构建 {学生名: 音频路径} 映射
@@ -653,6 +737,11 @@ def main() -> None:
         all_students[name] = f
 
     print(f"  找到 {len(all_students)} 个仿读音频文件")
+    _emit_stage(
+        "student_scan", "done",
+        current=len(all_students), total=len(all_students),
+        message="仿读音频扫描完成",
+    )
 
     # ---- 读取进度（断点续传） ----
     progress_data, done_set, summary_rows = load_progress(all_students)
@@ -664,6 +753,8 @@ def main() -> None:
 
     progress_data["standard_audio"] = os.path.basename(standard_audio)
     progress_data["standard_text"] = os.path.basename(standard_text)
+    progress_data["class_id"] = class_id
+    progress_data["unit_id"] = unit_id
     save_progress()
 
     # ---- 构建待处理列表 ----
@@ -708,7 +799,21 @@ def main() -> None:
         # =====================================================================
         if _config.modules.voice_analysis:
             print("\n[Phase 3] 提交语音分析任务 ...")
+            _emit_stage(
+                "voice_analysis", "running",
+                current=0, total=len(pending),
+                message="提交语音分析任务",
+            )
             for name, audio_path in pending:
+                if cancel_event is not None and cancel_event.is_set():
+                    _emit_stage("voice_analysis", "cancelled", message="任务已取消")
+                    return
+                # 暂停支持：阻塞等待 pause_event 被清除
+                if pause_event is not None:
+                    while pause_event.is_set():
+                        time.sleep(0.5)
+                        if cancel_event is not None and cancel_event.is_set():
+                            return
                 out_dir = os.path.join(result_dir, name)
                 voice_executor.submit(voice_task, name, audio_path, out_dir)
         else:
@@ -723,6 +828,11 @@ def main() -> None:
         # =====================================================================
         if _config.modules.whisper_transcribe and _config.modules.llm_compare:
             print("\n[Phase 4] 提交文字分析任务 ...")
+            _emit_stage(
+                "text_analysis", "running",
+                current=0, total=len(pending),
+                message="提交文字分析任务",
+            )
             whisper_executor.submit(
                 whisper_loop, pending, standard_text, result_dir
             )
@@ -742,7 +852,9 @@ def main() -> None:
         # Phase 4: 等待完成
         # =====================================================================
         print("\n[Phase 5] 等待所有任务完成 ...\n")
+        _emit_stage("wait", "running", message="等待所有任务完成")
         completion_tracker.all_done.wait()
+        _emit_stage("wait", "done", message="所有学生任务完成")
 
     finally:
         print("\n正在关闭线程池 ...")
@@ -766,20 +878,24 @@ def main() -> None:
         from src.audio_output import post_process
 
         print("\n[Phase 6] 后处理：汇总 Excel ...")
+        _emit_stage("post_process", "running", message="汇总 Excel")
         if os.path.exists(summary_path):
             post_process(
                 excel_path=summary_path,
                 result_dir=result_dir,
                 output_path=os.path.join(result_dir, "summary_with_details.xlsx"),
             )
+        _emit_stage("post_process", "done", message="后处理完成")
     else:
         print("\n[Phase 6] 后处理已跳过（POST_PROCESS=0）")
 
     # =========================================================================
     # Phase 6: 最终汇总 + 耗时统计
     # =========================================================================
-    print(f"\n[Phase 7] 最终汇总 ...")
+    print("\n[Phase 7] 最终汇总 ...")
+    _emit_stage("summary", "running", message="写入最终 summary.csv")
     write_summary()
+    _emit_stage("summary", "done", message="最终汇总完成")
     time_total = time.time() - time_total_start
     print(f"\n{'=' * 50}")
     print("全部完成！计时统计：")
@@ -806,13 +922,15 @@ def main() -> None:
     if _config.modules.filter_precheck:
         from src.filter_name import filter_precheck
 
-        print(f"\n[Phase 7] 数据完整性预检查 ...")
+        print("\n[Phase 7] 数据完整性预检查 ...")
+        _emit_stage("filter_precheck", "running", message="数据完整性预检查")
         missing = filter_precheck(
             audio_dir=imitation_audio_dir,
             summary_csv_path=summary_path,
         )
         if missing:
             print(f"  ⚠ 警告: {len(missing)} 个音频文件未出现在 summary 中")
+        _emit_stage("filter_precheck", "done", message="数据完整性预检查完成")
     else:
         print("\n[Phase 7] 预检查已跳过（FILTER_PRECHECK=0）")
 
@@ -826,7 +944,8 @@ def main() -> None:
             generate_progress_curves,
         )
 
-        print(f"\n[Phase 8] 归档 + 错题可视化 ...")
+        print("\n[Phase 8] 归档 + 错题可视化 ...")
+        _emit_stage("error_visualize", "running", message="归档 + 错题可视化")
         history_dir = os.path.join(result_dir, "history")
         archive_current_result(summary_path, history_dir)
 
@@ -836,6 +955,7 @@ def main() -> None:
             history_dir,
             os.path.join(error_analysis_dir, "progress_curves"),
         )
+        _emit_stage("error_visualize", "done", message="错题可视化完成")
     else:
         print("\n[Phase 8] 错题可视化已跳过（ERROR_VISUALIZE=0）")
 
@@ -845,6 +965,7 @@ def main() -> None:
     print("\n清理临时文件 ...")
     _cleanup_temp_files(result_dir)
     print("完成。\n")
+    _emit_stage("completed", "done", message="任务完成")
 
 
 def _run_post_phases(result_dir: str) -> None:
@@ -863,7 +984,7 @@ def _run_post_phases(result_dir: str) -> None:
     if _config.modules.filter_precheck:
         from src.filter_name import filter_precheck
 
-        print(f"\n[Phase 7] 数据完整性预检查 ...")
+        print("\n[Phase 7] 数据完整性预检查 ...")
         filter_precheck(
             audio_dir=_config.paths.abs_path(_config.paths.imitation_audio_dir),
             summary_csv_path=summary_path,
@@ -876,7 +997,7 @@ def _run_post_phases(result_dir: str) -> None:
             generate_progress_curves,
         )
 
-        print(f"\n[Phase 8] 归档 + 错题可视化 ...")
+        print("\n[Phase 8] 归档 + 错题可视化 ...")
         history_dir = os.path.join(result_dir, "history")
         archive_current_result(summary_path, history_dir)
 

@@ -18,6 +18,15 @@ models/
 # 自动生成的输出
 resource/result/
 
+# UI 运行时数据
+resource/classes/
+resource/logs/
+resource/uploads/
+
+# 前端构建产物与依赖
+ui/dist/
+ui/node_modules/
+
 # 音频文件（不纳入版本控制）
 *.mp3
 *.wav

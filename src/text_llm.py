@@ -23,6 +23,7 @@ text_llm.py — 基于 LLM 的语音转写文本比对模块
 """
 
 import csv
+import http.client
 import json
 import os
 import re
@@ -124,6 +125,8 @@ def call_llm(system_prompt: str, user_prompt: str, use_json: bool = False) -> st
         "Content-Type": "application/json",
         "Authorization": f"Bearer {_config.llm.api_key}",
     }
+    # 注意: system_prompt（常量）+ user_prompt 中「标准文本」为固定前缀，
+    # transcribed_text 作为变量置于末尾 —— 保持此顺序以命中 DeepSeek 前缀缓存。
     body = {
         "model": _config.llm.model,
         "messages": [
@@ -131,30 +134,48 @@ def call_llm(system_prompt: str, user_prompt: str, use_json: bool = False) -> st
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.0,
-        "max_tokens": 131072,
+        "max_tokens": _config.llm.max_tokens,
     }
     if use_json:
         body["response_format"] = {"type": "json_object"}
     if _config.llm.thinking:
         body["thinking"] = {"type": "enabled"}
 
-    # ---- 发送请求 ----
+    # ---- 发送请求（含重试：最多 3 次，指数退避）----
     req = urllib.request.Request(
         url, data=json.dumps(body).encode("utf-8"), headers=headers
     )
-    try:
-        with urllib.request.urlopen(req, timeout=_config.llm.timeout) as resp:
-            raw_body = resp.read().decode("utf-8")
-            result = json.loads(raw_body)
-    except urllib.error.HTTPError as e:
-        error_body = ""
+    result = None
+    raw_body = ""
+    last_error = None
+    for attempt in range(3):
         try:
-            error_body = e.read().decode("utf-8")
-        except Exception:
-            pass
-        raise RuntimeError(f"[LLM] API 返回 HTTP {e.code}: {error_body}")
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"[LLM] 无法连接 API ({url}): {e.reason}")
+            with urllib.request.urlopen(req, timeout=_config.llm.timeout) as resp:
+                raw_body = resp.read().decode("utf-8")
+                result = json.loads(raw_body)
+            break  # 成功则跳出重试循环
+        except (http.client.IncompleteRead, http.client.RemoteDisconnected,
+                ConnectionResetError, TimeoutError, urllib.error.URLError) as e:
+            last_error = e
+            if attempt < 2:
+                wait = (2 ** attempt) * 1.5  # 1.5s, 3s
+                print(f"  [LLM] 网络异常 (尝试 {attempt + 1}/3)，{wait:.1f}s 后重试: {e}")
+                time.sleep(wait)
+                # 重建 request（某些实现要求）和 body bytes
+                req = urllib.request.Request(
+                    url, data=json.dumps(body).encode("utf-8"), headers=headers
+                )
+            else:
+                raise RuntimeError(
+                    f"[LLM] 网络异常，已重试 3 次仍失败: {type(e).__name__}: {e}"
+                ) from e
+        except urllib.error.HTTPError as e:
+            error_body = ""
+            try:
+                error_body = e.read().decode("utf-8")
+            except Exception:
+                pass
+            raise RuntimeError(f"[LLM] API 返回 HTTP {e.code}: {error_body}")
 
     # ---- 验证响应 ----
     if "error" in result:
@@ -175,9 +196,9 @@ def call_llm(system_prompt: str, user_prompt: str, use_json: bool = False) -> st
         reasoning = choices[0].get("message", {}).get("reasoning_content", "")
         if reasoning and finish_reason == "length" and _config.llm.thinking and use_json:
             print("  [LLM] 思考模式 token 耗尽，回退到非思考模式重试 ...")
-            # 移除 thinking，所有 token 用于 content
+            # 移除 thinking，所有 token 用于 content（回退时放宽预算，仅此一次）
             body.pop("thinking", None)
-            body["max_tokens"] = max(body.get("max_tokens", 4096), 131072)
+            body["max_tokens"] = max(_config.llm.max_tokens, 16384)
             retry_req = urllib.request.Request(
                 url, data=json.dumps(body).encode("utf-8"), headers=headers
             )
@@ -202,10 +223,24 @@ def call_llm(system_prompt: str, user_prompt: str, use_json: bool = False) -> st
 
     # 打印 token 消耗（每次 API 调用都记录）
     usage = result.get("usage", {})
+    # 前缀缓存命中/未命中（DeepSeek 返回），用于确认标准文本+系统提示词是否被缓存复用
+    cache_hit = usage.get("prompt_cache_hit_tokens")
+    cache_miss = usage.get("prompt_cache_miss_tokens")
+    # 思考模式 reasoning token（按 completion 计费，是成本大头）
+    reasoning_tokens = usage.get("completion_tokens_details", {}).get(
+        "reasoning_tokens"
+    )
+    cache_str = ""
+    if cache_hit is not None or cache_miss is not None:
+        cache_str = f" cache_hit={cache_hit} cache_miss={cache_miss}"
+    reasoning_str = ""
+    if reasoning_tokens is not None:
+        reasoning_str = f" reasoning={reasoning_tokens}"
     print(
         f"  [LLM Token] prompt={usage.get('prompt_tokens','?')} "
         f"completion={usage.get('completion_tokens','?')} "
         f"total={usage.get('total_tokens','?')}"
+        f"{cache_str}{reasoning_str}"
     )
 
     return content
@@ -392,11 +427,11 @@ _SYSTEM_PROMPT = (
     "3.漏读:标准词在转写中缺失\n"
     "4.等价规则未定义的其他差异\n"
     "【输出格式-严格JSON,禁止注释】\n"
-    '{"h":true,"T":"sentence0|||sentence1|||...","d":[{"i":0,"e":[{"r":["breeze","breath"]},{"i":["extra words"]}]}]}\n'
-    "字段: h=has_diff, T=所有转写句子按顺序用|||拼接(不要加粗体**标记!)\n"
-    "d=差异数组, i=标准句序号(0-based), e=该句错误数组\n"
+    '{"h":true,"d":[{"i":0,"t":"该句转写文本","e":[{"r":["breeze","breath"]},{"i":["extra words"]}]}]}\n'
+    "字段: h=has_diff, d=差异数组\n"
+    "d 元素: i=标准句序号(0-based), t=该句转写文本(仅差异句,不要加粗体**标记), e=该句错误数组\n"
     "e: {\"r\":[标准词,识别词]}=替换, {\"i\":[多读词]}=多读, {\"d\":[漏读词]}=漏读\n"
-    "无差异则h:false,d:[]. 不要输出标准句(已省略). 不要用**粗体**. 紧凑JSON(无换行无缩进). 逐句不漏."
+    "逐句比对不跳句;但只输出有差异的句子(正确句不要输出,无需回写 t). 无差异则h:false,d:[]. 不要输出标准句(已省略). 不要用**粗体**. 紧凑JSON(无换行无缩进)."
 )
 
 
@@ -575,11 +610,10 @@ def llm_compare_texts(
             sent_errors = entry.get("e", entry.get("errors", []))
             sent_idx = entry.get("i", idx - 1)
 
-            # 取转写句: T 块按索引取 / 旧格式 t 字段
-            if T_parts and sent_idx < len(T_parts):
+            # 取转写句: 优先 per-entry t 字段, 回退旧格式 T 块按索引取
+            hyp_sent = entry.get("t", entry.get("transcribed", ""))
+            if not hyp_sent and T_parts and sent_idx < len(T_parts):
                 hyp_sent = T_parts[sent_idx]
-            else:
-                hyp_sent = entry.get("t", entry.get("transcribed", ""))
 
             # 对转写句本地加粗: 按 error 中的 t_word 加粗
             for e in sent_errors:

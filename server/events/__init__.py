@@ -1,0 +1,1 @@
+"""server.events 包 — SSE 事件流。"""
