@@ -104,20 +104,19 @@ src/config.py  ←  src/constants.py  ←  src/utils.py
 - **三线程池设计原因**：voice（C++ 库非线程安全 → 1 worker）、whisper（PyTorch 模型大 → 单例 + 1 worker）、LLM（纯 I/O → 400 workers）
 - **Web UI 层（server/ + services/ + ui/）**：将上述 CLI 功能包装为浏览器可访问的图形界面，支持班级/单元管理、文件拖拽上传、实时进度监控、交互式结果浏览（详见 `agent_docs/ui-architecture.md`）
 
-### 班级/单元数据模型
-UI 引入了班级（Class）和单元（Unit）两级组织：
+### 班级/单元数据模型（共享单元架构）
+单元为**共享教材**，所有班级可见同一套单元；班级数据按班级隔离：
 ```
-resource/classes/{class_id}/
-├── class.json                    # 班级元数据
-├── students.csv                  # 学生名单（name, student_id, status, note）
-└── units/{unit_id}/
-    ├── unit.json                 # 单元元数据
-    ├── standard_audio/           # 本单元的标准音频
-    ├── standard_text/            # 本单元的标准文本
-    ├── imitation_audio/          # 本单元的学生仿读音频
-    └── result/                   # 本单元的评估结果
+resource/units/{unit_name}/           # 共享教材
+├── standard_audio/                   # 标准音频
+└── standard_text/                    # 标准文本
+resource/classes/{class_name}/        # 班级私有
+├── students.csv                      # 学生名单
+└── {unit_name}/                      # 本班在此单元的数据
+    ├── imitation_audio/              # 学生仿读音频
+    └── result/                       # 评估结果
 ```
-首次启动 `run_ui.py` 时，会自动创建默认班级和默认单元，并将 `resource/` 下的遗留文件（如 `resource/standard_audio/` 等）非破坏性地迁移过去。
+首次启动 `run_ui.py` 自动创建默认班级和默认单元。
 
 ---
 
@@ -127,7 +126,8 @@ resource/classes/{class_id}/
 ```bash
 python run_ui.py                   # Web UI 一键启动（推荐）
 python run.py                      # CLI 模式全流程
-python src/launcher.py             # CLI 模式（等价于上方）
+python build_exe.py                # PyInstaller 打包（分发用）
+python build_exe.py --dev          # 打包（开发模式，不含模型）
 cd ui && npm run dev               # 前端开发模式（热重载，需先启动后端）
 cd ui && npm run build             # 前端生产构建（输出到 ui/dist/）
 ```
@@ -155,14 +155,16 @@ modules:
 |------|---------|
 | `agent_docs/coding-conventions.md` | 修改任何代码前（Python + Vue/TS/CSS） |
 | `agent_docs/frontend-conventions.md` | 修改前端 Vue/TS/CSS 代码时 |
+| `agent_docs/modal-conventions.md` | 添加弹窗/Modal 组件时 |
 | `agent_docs/verification-guide.md` | 添加功能 / 修 bug 后 |
 | `agent_docs/file-handling-rules.md` | 处理文件 I/O 时 |
 | `agent_docs/resource-naming-conventions.md` | 添加资源文件时 |
 | `agent_docs/module-architecture.md` | 跨模块修改时 |
 | `agent_docs/workflow-phases.md` | 修改流水线逻辑时 |
-| `agent_docs/ui-architecture.md` | 修改 UI 层（server/services/ui）时 |
+| `agent_docs/ui-architecture.md` | 修改 UI 层时（注：此文档已淘汰，以 `doc/技术架构说明书.md` 为准） |
 | `agent_docs/api-conventions.md` | 修改/新增 API 端点时 |
-| `agent_docs/readme-design-principles.md` | 更新或重新设计 README 时 |
+| `doc/技术架构说明书.md` | 了解完整项目架构 |
+| `doc/发版流程.md` | 执行发版/打包操作时 |
 
 所有 agent_docs 文件为**英文文件名 + 中文内容**，且**不含代码片段**（纯指令文档）。
 
