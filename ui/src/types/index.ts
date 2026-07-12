@@ -79,6 +79,23 @@ export interface TaskInfo {
   logs: string[];
   log_path: string;
   exit_code?: number | null;
+  progress?: TaskProgress;
+}
+
+export interface TaskProgress {
+  total: number;
+  voice_done: number;
+  text_done: number;
+  llm_done: number;
+  stages: StageProgressItem[];
+}
+
+export interface StageProgressItem {
+  stage: string;
+  status: string;
+  current?: number;
+  total?: number;
+  message?: string;
 }
 
 // ---------- 结果 ----------

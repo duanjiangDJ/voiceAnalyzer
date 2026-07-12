@@ -1,7 +1,8 @@
 """
 class_service.py — 班级与单元数据服务
 ===================================
-管理 resource/classes 下的班级、单元、学生名单，并提供旧扁平数据的默认迁移映射。
+管理 resource/classes 下的班级（文件夹名即名称）、resource/units 下的共享单元（文件夹名即名称）。
+所有班级共享同一套单元（教材）。学生仿读音频和评估结果按班级×单元存放。
 
 依赖:
     - csv, json, re, shutil, pathlib（标准库）
@@ -21,13 +22,19 @@ from services.app_context import get_app_context
 from services.log_service import get_log_service
 
 
-DEFAULT_CLASS_ID = "default-class"
-DEFAULT_UNIT_ID = "default-unit"
-DEFAULT_CLASS_NAME = "默认班级"
-DEFAULT_UNIT_NAME = "默认单元"
+DEFAULT_CLASS_ID = ""
+DEFAULT_UNIT_ID = ""
 
 _AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".mp4"}
 _STUDENT_RE = re.compile(r"^(.+)-(\d{10})$")
+
+
+def _safe_name(raw: str) -> str:
+    """将用户输入的名称转为安全的文件夹名。"""
+    name = raw.strip()
+    name = re.sub(r'[<>:"/\\|?*]', '_', name)
+    name = name.strip('. ')
+    return name or "untitled"
 
 
 class ClassService:
@@ -37,81 +44,61 @@ class ClassService:
         self.context = get_app_context()
         self.log_service = get_log_service()
 
-    def ensure_default_workspace(self) -> dict:
-        """
-        确保默认班级和默认单元存在，并非破坏性复制旧数据。
-
-        返回:
-            当前默认班级和单元信息。
-        """
-        class_dir = self.get_class_dir(DEFAULT_CLASS_ID)
-        unit_dir = self.get_unit_dir(DEFAULT_CLASS_ID, DEFAULT_UNIT_ID)
-        class_dir.mkdir(parents=True, exist_ok=True)
-        unit_dir.mkdir(parents=True, exist_ok=True)
-        self._write_json_if_missing(class_dir / "class.json", {
-            "class_id": DEFAULT_CLASS_ID,
-            "name": DEFAULT_CLASS_NAME,
-            "description": "由旧 resource 扁平数据自动建立的默认班级",
-        })
-        self._write_json_if_missing(unit_dir / "unit.json", {
-            "unit_id": DEFAULT_UNIT_ID,
-            "name": DEFAULT_UNIT_NAME,
-            "description": "由旧 resource 扁平数据自动建立的默认单元",
-        })
-        for child in ("standard_audio", "standard_text", "imitation_audio", "result"):
-            (unit_dir / child).mkdir(parents=True, exist_ok=True)
-
-        self._copy_legacy_files(self.context.standard_audio_dir, unit_dir / "standard_audio")
-        self._copy_legacy_files(self.context.standard_text_dir, unit_dir / "standard_text")
-        self._copy_legacy_files(self.context.imitation_audio_dir, unit_dir / "imitation_audio")
-        self._copy_legacy_result_files(self.context.result_dir, unit_dir / "result")
-        self._ensure_students_csv(class_dir / "students.csv", unit_dir / "imitation_audio")
-        return {"class_id": DEFAULT_CLASS_ID, "unit_id": DEFAULT_UNIT_ID}
+    # ---------- 班级 ----------
 
     def list_classes(self) -> dict:
-        """列出所有班级。"""
-        self.ensure_default_workspace()
+        """列出所有班级（文件夹名即班级名称）。"""
         items = []
+        first_class = ""
         for class_dir in sorted(self.context.classes_dir.iterdir()):
             if not class_dir.is_dir() or class_dir.name.startswith(".") or class_dir.name.startswith("__"):
                 continue
-            meta = self._read_json(class_dir / "class.json", {})
-            units = self.list_units(class_dir.name)["items"]
+            if not first_class:
+                first_class = class_dir.name
+            units = self.list_units()["items"]
             items.append({
                 "class_id": class_dir.name,
-                "name": meta.get("name", class_dir.name),
-                "description": meta.get("description", ""),
+                "name": class_dir.name,
+                "description": "",
                 "unit_count": len(units),
                 "student_count": len(self.list_students(class_dir.name)["items"]),
             })
-        return {"items": items, "current": {"class_id": DEFAULT_CLASS_ID, "unit_id": DEFAULT_UNIT_ID}}
+        current_class = first_class
+        unit_items = self.list_units()["items"]
+        current_unit = unit_items[0]["unit_id"] if unit_items else ""
+        return {"items": items, "current": {"class_id": current_class, "unit_id": current_unit}}
 
     def create_class(self, name: str, description: str = "") -> dict:
-        """创建班级。"""
-        class_id = self._slugify(name)
-        class_dir = self.get_class_dir(class_id)
+        """创建班级（以名称作为文件夹名）。"""
+        folder = _safe_name(name)
+        class_dir = self.get_class_dir(folder)
+        if class_dir.exists():
+            return {"class_id": folder, "name": folder, "description": "", "duplicate": True}
         class_dir.mkdir(parents=True, exist_ok=True)
-        (class_dir / "units").mkdir(parents=True, exist_ok=True)
-        self._write_json(class_dir / "class.json", {"class_id": class_id, "name": name, "description": description})
         self._ensure_students_csv(class_dir / "students.csv", class_dir / "__empty__")
-        self.log_service.append("api", "INFO", f"创建班级: {name}", {"class_id": class_id})
-        return {"class_id": class_id, "name": name, "description": description}
+        self.log_service.append("api", "INFO", f"创建班级: {name} -> {folder}", {"class_id": folder})
+        return {"class_id": folder, "name": name, "description": description}
 
     def update_class(self, class_id: str, name: str, description: str = "") -> dict:
-        """更新班级显示信息。"""
-        class_dir = self.get_class_dir(class_id)
+        """重命名班级（重命名文件夹）。"""
+        safe_id = self._safe_id(class_id)
+        class_dir = self.get_class_dir(safe_id)
         if not class_dir.exists():
             return {"updated": False, "reason": "班级不存在"}
-        data = {"class_id": self._safe_id(class_id), "name": name, "description": description}
-        self._write_json(class_dir / "class.json", data)
-        self.log_service.append("api", "INFO", f"更新班级: {name}", {"class_id": class_id})
-        return {"updated": True, **data}
+        new_folder = _safe_name(name)
+        if new_folder == safe_id:
+            return {"updated": True, "class_id": safe_id, "name": safe_id, "description": description}
+        new_dir = self.get_class_dir(new_folder)
+        if new_dir.exists():
+            return {"updated": False, "reason": "目标班级名已存在"}
+        shutil.move(str(class_dir), str(new_dir))
+        self._rename_archive_class_refs(safe_id, new_folder)
+        self.log_service.append("api", "INFO", f"重命名班级: {safe_id} -> {new_folder}")
+        return {"updated": True, "class_id": new_folder, "name": name, "description": description}
 
     def archive_class(self, class_id: str) -> dict:
-        """归档班级目录，默认班级不允许归档。"""
+        """归档班级目录。"""
         safe_id = self._safe_id(class_id)
-        if safe_id == DEFAULT_CLASS_ID:
-            return {"archived": False, "reason": "默认班级不能归档"}
         class_dir = self.get_class_dir(safe_id)
         if not class_dir.exists():
             return {"archived": False, "reason": "班级不存在"}
@@ -123,61 +110,76 @@ class ClassService:
         self._add_archive_record("class", class_name=safe_id, class_id=safe_id, original_path=str(class_dir), archived_path=str(target))
         return {"archived": True, "target": str(target)}
 
-    def list_units(self, class_id: str) -> dict:
-        """列出班级下所有单元。"""
-        units_dir = self.get_class_dir(class_id) / "units"
-        if not units_dir.exists():
-            return {"items": []}
+    # ---------- 单元（共享教材，所有班级可见）----------
+
+    def list_units(self, class_id: str = "") -> dict:
+        """列出所有共享单元（resource/units/ 下所有子目录）。"""
         items = []
+        units_dir = self.context.units_dir
+        if not units_dir.exists():
+            return {"items": items}
         for unit_dir in sorted(units_dir.iterdir()):
             if not unit_dir.is_dir() or unit_dir.name.startswith(".") or unit_dir.name.startswith("__"):
                 continue
-            meta = self._read_json(unit_dir / "unit.json", {})
-            status = self.get_unit_status(class_id, unit_dir.name)
+            status = self.get_unit_status(class_id, unit_dir.name) if class_id else {}
             items.append({
                 "unit_id": unit_dir.name,
-                "name": meta.get("name", unit_dir.name),
-                "description": meta.get("description", ""),
+                "name": unit_dir.name,
+                "description": "",
                 "status": status,
             })
         return {"items": items}
 
     def create_unit(self, class_id: str, name: str, description: str = "") -> dict:
-        """创建单元。"""
-        unit_id = self._slugify(name)
-        unit_dir = self.get_unit_dir(class_id, unit_id)
-        for child in ("standard_audio", "standard_text", "imitation_audio", "result"):
+        """创建共享单元（在 resource/units/ 下）。class_id 参数保留兼容性但不影响位置。"""
+        folder = _safe_name(name)
+        unit_dir = self.context.units_dir / folder
+        if unit_dir.exists():
+            return {"class_id": class_id, "unit_id": folder, "name": name, "description": description, "duplicate": True}
+        for child in ("standard_audio", "standard_text"):
             (unit_dir / child).mkdir(parents=True, exist_ok=True)
-        self._write_json(unit_dir / "unit.json", {"unit_id": unit_id, "name": name, "description": description})
-        self.log_service.append("api", "INFO", f"创建单元: {name}", {"class_id": class_id, "unit_id": unit_id})
-        return {"class_id": class_id, "unit_id": unit_id, "name": name, "description": description}
+        self.log_service.append("api", "INFO", f"创建单元: {name} -> {folder}", {"unit_id": folder})
+        return {"class_id": class_id, "unit_id": folder, "name": name, "description": description}
 
     def update_unit(self, class_id: str, unit_id: str, name: str, description: str = "") -> dict:
-        """更新单元显示信息。"""
-        unit_dir = self.get_unit_dir(class_id, unit_id)
+        """重命名共享单元（重命名 resource/units/ 下的文件夹）。"""
+        safe_unit = self._safe_id(unit_id)
+        unit_dir = self.context.units_dir / safe_unit
         if not unit_dir.exists():
             return {"updated": False, "reason": "单元不存在"}
-        data = {"unit_id": self._safe_id(unit_id), "name": name, "description": description}
-        self._write_json(unit_dir / "unit.json", data)
-        self.log_service.append("api", "INFO", f"更新单元: {name}", {"class_id": class_id, "unit_id": unit_id})
-        return {"updated": True, "class_id": class_id, **data}
+        new_folder = _safe_name(name)
+        if new_folder == safe_unit:
+            return {"updated": True, "class_id": class_id, "unit_id": safe_unit, "name": safe_unit, "description": description}
+        new_dir = self.context.units_dir / new_folder
+        if new_dir.exists():
+            return {"updated": False, "reason": "目标单元名已存在"}
+        shutil.move(str(unit_dir), str(new_dir))
+        for class_dir in self.context.classes_dir.iterdir():
+            if not class_dir.is_dir() or class_dir.name.startswith(".") or class_dir.name.startswith("__"):
+                continue
+            old_class_unit = class_dir / safe_unit
+            if old_class_unit.exists():
+                new_class_unit = class_dir / new_folder
+                shutil.move(str(old_class_unit), str(new_class_unit))
+        self._rename_archive_unit_refs(safe_unit, new_folder)
+        self.log_service.append("api", "INFO", f"重命名单元: {safe_unit} -> {new_folder}")
+        return {"updated": True, "class_id": class_id, "unit_id": new_folder, "name": name, "description": description}
 
     def archive_unit(self, class_id: str, unit_id: str) -> dict:
-        """归档单元目录，默认单元不允许归档。"""
-        safe_class = self._safe_id(class_id)
+        """归档共享单元（移动 resource/units/ 下目录到 __archived__）。"""
         safe_unit = self._safe_id(unit_id)
-        if safe_class == DEFAULT_CLASS_ID and safe_unit == DEFAULT_UNIT_ID:
-            return {"archived": False, "reason": "默认单元不能归档"}
-        unit_dir = self.get_unit_dir(class_id, safe_unit)
+        unit_dir = self.context.units_dir / safe_unit
         if not unit_dir.exists():
             return {"archived": False, "reason": "单元不存在"}
-        trash_dir = self.get_class_dir(class_id) / "units" / "__archived__"
+        trash_dir = self.context.units_dir / "__archived__"
         trash_dir.mkdir(parents=True, exist_ok=True)
         target = trash_dir / f"{safe_unit}_{self._timestamp()}"
         shutil.move(str(unit_dir), str(target))
-        self.log_service.append("api", "WARNING", "归档单元", {"class_id": class_id, "unit_id": safe_unit, "target": str(target)})
-        self._add_archive_record("unit", class_name=safe_unit, class_id=safe_class, unit_id=safe_unit, original_path=str(unit_dir), archived_path=str(target))
+        self.log_service.append("api", "WARNING", "归档单元", {"unit_id": safe_unit, "target": str(target)})
+        self._add_archive_record("unit", class_name=safe_unit, class_id=class_id, unit_id=safe_unit, original_path=str(unit_dir), archived_path=str(target))
         return {"archived": True, "target": str(target)}
+
+    # ---------- 学生 ----------
 
     def list_students(self, class_id: str, unit_id: str | None = None) -> dict:
         """列出班级学生，并可叠加指定单元提交状态。"""
@@ -185,7 +187,7 @@ class ClassService:
         students = self._read_students(students_path)
         audio_map = {}
         if unit_id:
-            audio_dir = self.get_unit_dir(class_id, unit_id) / "imitation_audio"
+            audio_dir = self._class_unit_dir(class_id, unit_id) / "imitation_audio"
             audio_map = {self._student_key_from_audio(path): path for path in audio_dir.glob("*") if path.suffix.lower() in _AUDIO_EXTENSIONS}
         items = []
         for student in students:
@@ -243,36 +245,32 @@ class ClassService:
     def permanently_delete_class(self, class_id: str) -> dict:
         """物理删除班级目录及所有单元的所有数据。"""
         safe_id = self._safe_id(class_id)
-        if safe_id == DEFAULT_CLASS_ID:
-            return {"deleted": False, "reason": "默认班级不能删除"}
         class_dir = self.get_class_dir(safe_id)
         if not class_dir.exists():
             return {"deleted": False, "reason": "班级不存在"}
-        # 先清理可能存在于归档记录中的条目
         self._remove_archive_records_by_class(safe_id)
         shutil.rmtree(str(class_dir))
         self.log_service.append("api", "WARNING", "物理删除班级", {"class_id": safe_id, "path": str(class_dir)})
         return {"deleted": True}
 
     def permanently_delete_unit(self, class_id: str, unit_id: str) -> dict:
-        """物理删除单元目录，删除所有班级中含该单元的所有数据。"""
+        """物理删除共享单元：删除 resource/units/ 下的目录以及所有班级下的该单元数据。"""
         safe_unit = self._safe_id(unit_id)
-        safe_class = self._safe_id(class_id)
-        if safe_class == DEFAULT_CLASS_ID and safe_unit == DEFAULT_UNIT_ID:
-            return {"deleted": False, "reason": "默认单元不能删除"}
-        # 遍历所有班级，删除同名单元
+        unit_dir = self.context.units_dir / safe_unit
+        if unit_dir.exists():
+            shutil.rmtree(str(unit_dir))
+            self.log_service.append("api", "WARNING", "物理删除共享单元", {"unit_id": safe_unit, "path": str(unit_dir)})
         deleted_count = 0
-        for class_dir in sorted(self.context.classes_dir.iterdir()):
+        for class_dir in self.context.classes_dir.iterdir():
             if not class_dir.is_dir() or class_dir.name.startswith(".") or class_dir.name.startswith("__"):
                 continue
-            unit_dir = class_dir / "units" / safe_unit
-            if unit_dir.exists():
-                shutil.rmtree(str(unit_dir))
-                self.log_service.append("api", "WARNING", "物理删除单元", {"class_id": class_dir.name, "unit_id": safe_unit, "path": str(unit_dir)})
+            class_unit = class_dir / safe_unit
+            if class_unit.exists():
+                shutil.rmtree(str(class_unit))
+                self.log_service.append("api", "WARNING", "物理删除班级单元数据", {"class_id": class_dir.name, "unit_id": safe_unit})
                 deleted_count += 1
-        # 清理归档记录
         self._remove_archive_records_by_unit(safe_unit)
-        return {"deleted": bool(deleted_count), "deleted_count": deleted_count}
+        return {"deleted": bool(unit_dir.exists() or deleted_count > 0), "deleted_count": deleted_count}
 
     def permanently_delete_student(self, class_id: str, student_id: str) -> dict:
         """物理删除学生：从 CSV 移除并删除所有单元的音频和结果。"""
@@ -286,23 +284,19 @@ class ClassService:
         self._write_students(students_path, kept)
         student_name = removed[0].get("name", student_id) if removed else student_id
         student_key = f"{student_name}-{student_id}"
-        # 删除所有单元的音频和结果
-        units_dir = self.get_class_dir(safe_class) / "units"
-        if units_dir.exists():
-            for unit_dir in units_dir.iterdir():
-                if not unit_dir.is_dir() or unit_dir.name.startswith(".") or unit_dir.name.startswith("__"):
-                    continue
-                # 删除音频
-                audio_dir = unit_dir / "imitation_audio"
-                if audio_dir.exists():
-                    for audio_path in audio_dir.iterdir():
-                        if audio_path.stem == student_key:
-                            audio_path.unlink()
-                # 删除结果
-                result_dir = unit_dir / "result"
-                student_result = result_dir / student_key
-                if student_result.exists():
-                    shutil.rmtree(str(student_result))
+        for unit_dir in self.context.units_dir.iterdir():
+            if not unit_dir.is_dir() or unit_dir.name.startswith(".") or unit_dir.name.startswith("__"):
+                continue
+            class_unit = self.get_class_dir(safe_class) / unit_dir.name
+            audio_dir = class_unit / "imitation_audio"
+            if audio_dir.exists():
+                for audio_path in audio_dir.iterdir():
+                    if audio_path.stem == student_key:
+                        audio_path.unlink()
+            result_dir = class_unit / "result"
+            student_result = result_dir / student_key
+            if student_result.exists():
+                shutil.rmtree(str(student_result))
         self._remove_archive_records_by_student(safe_class, student_id)
         self.log_service.append("api", "WARNING", "物理删除学生", {"class_id": safe_class, "student_id": student_id})
         return {"deleted": True}
@@ -310,11 +304,9 @@ class ClassService:
     # ---------- 归档记录管理 ----------
 
     def _archived_record_path(self) -> Path:
-        """归档记录文件路径。"""
         return self.context.classes_dir.parent / "archived.json"
 
     def _read_archive_records(self) -> list[dict]:
-        """读取所有归档记录。"""
         path = self._archived_record_path()
         if not path.exists():
             return []
@@ -324,7 +316,6 @@ class ClassService:
             return []
 
     def _write_archive_records(self, records: list[dict]) -> None:
-        """写入归档记录。"""
         path = self._archived_record_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
@@ -334,20 +325,13 @@ class ClassService:
     def _add_archive_record(self, record_type: str, *, class_name: str = "", class_id: str = "",
                             unit_id: str = "", student_id: str = "",
                             original_path: str = "", archived_path: str = "") -> str:
-        """添加一条归档记录并返回记录 ID。"""
         records = self._read_archive_records()
         record_id = uuid.uuid4().hex[:12]
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         record = {
-            "id": record_id,
-            "type": record_type,
-            "name": class_name,
-            "class_id": class_id,
-            "unit_id": unit_id,
-            "student_id": student_id,
-            "original_path": original_path,
-            "archived_path": archived_path,
-            "archived_at": now,
+            "id": record_id, "type": record_type, "name": class_name,
+            "class_id": class_id, "unit_id": unit_id, "student_id": student_id,
+            "original_path": original_path, "archived_path": archived_path, "archived_at": now,
         }
         records.append(record)
         self._write_archive_records(records)
@@ -355,29 +339,38 @@ class ClassService:
         return record_id
 
     def _remove_archive_records_by_class(self, class_id: str) -> None:
-        """删除指定班级的所有归档记录。"""
         records = self._read_archive_records()
         kept = [r for r in records if r.get("class_id") != class_id]
         self._write_archive_records(kept)
 
     def _remove_archive_records_by_unit(self, unit_id: str) -> None:
-        """删除指定单元的所有归档记录。"""
         records = self._read_archive_records()
         kept = [r for r in records if r.get("unit_id") != unit_id]
         self._write_archive_records(kept)
 
     def _remove_archive_records_by_student(self, class_id: str, student_id: str) -> None:
-        """删除指定学生的归档记录。"""
         records = self._read_archive_records()
         kept = [r for r in records if not (r.get("class_id") == class_id and r.get("student_id") == student_id)]
         self._write_archive_records(kept)
 
+    def _rename_archive_class_refs(self, old_id: str, new_id: str) -> None:
+        records = self._read_archive_records()
+        for r in records:
+            if r.get("class_id") == old_id:
+                r["class_id"] = new_id
+        self._write_archive_records(records)
+
+    def _rename_archive_unit_refs(self, old_id: str, new_id: str) -> None:
+        records = self._read_archive_records()
+        for r in records:
+            if r.get("unit_id") == old_id:
+                r["unit_id"] = new_id
+        self._write_archive_records(records)
+
     def get_archived_items(self) -> list[dict]:
-        """获取所有归档项目列表。"""
         return self._read_archive_records()
 
     def restore_archived_item(self, record_id: str) -> dict:
-        """复原归档项目。班级/单元从 __archived__ 移回；学生重新加入 CSV。"""
         records = self._read_archive_records()
         target_record = None
         for r in records:
@@ -394,7 +387,6 @@ class ClassService:
         student_name = target_record.get("name", "")
 
         if rtype == "student":
-            # 学生归档仅从 CSV 移除，复原即重新加入 CSV
             students_path = self.get_class_dir(class_id) / "students.csv"
             rows = self._read_students(students_path)
             if not any(r.get("student_id") == student_id for r in rows):
@@ -405,19 +397,16 @@ class ClassService:
             self.log_service.append("api", "INFO", "复原学生", {"record_id": record_id})
             return {"restored": True, "record": target_record}
 
-        # 班级或单元：从 __archived__ 移回原位置
         archived_path = Path(target_record.get("archived_path", ""))
         original_path = Path(target_record.get("original_path", ""))
         if not archived_path.is_absolute() or str(archived_path) in (".", ""):
             records = [r for r in records if r["id"] != record_id]
             self._write_archive_records(records)
             return {"restored": False, "reason": "归档路径无效，记录已清理"}
-
         if not archived_path.exists():
             records = [r for r in records if r["id"] != record_id]
             self._write_archive_records(records)
             return {"restored": False, "reason": "归档文件已不存在，记录已清理"}
-
         original_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             shutil.move(str(archived_path), str(original_path))
@@ -429,7 +418,6 @@ class ClassService:
         return {"restored": True, "record": target_record}
 
     def permanently_delete_archived_item(self, record_id: str) -> dict:
-        """物理删除归档项目。班级/单元删除文件；学生仅移除记录。"""
         records = self._read_archive_records()
         target_record = None
         for r in records:
@@ -438,7 +426,6 @@ class ClassService:
                 break
         if not target_record:
             return {"deleted": False, "reason": "归档记录不存在"}
-
         archived_path = Path(target_record.get("archived_path", ""))
         if archived_path.is_absolute() and str(archived_path) not in (".", "") and archived_path.exists():
             try:
@@ -448,14 +435,12 @@ class ClassService:
                     archived_path.unlink()
             except PermissionError:
                 return {"deleted": False, "reason": "文件被占用，请关闭相关程序后重试"}
-
         records = [r for r in records if r["id"] != record_id]
         self._write_archive_records(records)
         self.log_service.append("api", "WARNING", "物理删除归档项目", {"record_id": record_id, "path": str(archived_path)})
         return {"deleted": True}
 
     def import_students_csv(self, class_id: str, csv_text: str) -> dict:
-        """从 CSV 文本导入学生名单。"""
         reader = csv.DictReader(csv_text.splitlines())
         saved = []
         rejected = []
@@ -470,82 +455,64 @@ class ClassService:
         return {"saved": saved, "rejected": rejected, "students": self.list_students(class_id)["items"]}
 
     def upsert_students_from_audio(self, class_id: str, unit_id: str) -> dict:
-        """从单元音频文件补齐班级学生名单。"""
         students_path = self.get_class_dir(class_id) / "students.csv"
         existing = {(row["name"], row["student_id"]): row for row in self._read_students(students_path)}
-        audio_dir = self.get_unit_dir(class_id, unit_id) / "imitation_audio"
+        audio_dir = self._class_unit_dir(class_id, unit_id) / "imitation_audio"
         for path in audio_dir.glob("*"):
             key = self._student_key_from_audio(path)
             match = _STUDENT_RE.match(key)
             if match:
                 existing.setdefault((match.group(1), match.group(2)), {
-                    "name": match.group(1),
-                    "student_id": match.group(2),
-                    "status": "active",
-                    "note": "",
+                    "name": match.group(1), "student_id": match.group(2), "status": "active", "note": "",
                 })
         self._write_students(students_path, list(existing.values()))
         return self.list_students(class_id, unit_id)
 
     def get_unit_status(self, class_id: str, unit_id: str) -> dict:
-        """获取单元素材、提交和结果状态。"""
-        unit_dir = self.get_unit_dir(class_id, unit_id)
-        standard_audio = list((unit_dir / "standard_audio").glob("*")) if (unit_dir / "standard_audio").exists() else []
-        standard_text = list((unit_dir / "standard_text").glob("*.txt")) if (unit_dir / "standard_text").exists() else []
-        audio_files = [path for path in (unit_dir / "imitation_audio").glob("*") if path.suffix.lower() in _AUDIO_EXTENSIONS]
-        result_dir = unit_dir / "result"
+        shared = self.context.units_dir / unit_id
+        class_unit = self._class_unit_dir(class_id, unit_id) if class_id else None
+        standard_audio = list((shared / "standard_audio").glob("*")) if shared.exists() else []
+        standard_text = list((shared / "standard_text").glob("*.txt")) if shared.exists() else []
+        audio_files = list((class_unit / "imitation_audio").glob("*")) if class_unit and (class_unit / "imitation_audio").exists() else []
+        result_dir = class_unit / "result" if class_unit else None
         return {
             "standard_audio_ready": bool(standard_audio),
             "standard_text_ready": bool(standard_text),
-            "student_audio_count": len(audio_files),
-            "result_ready": (result_dir / "summary.csv").exists(),
-            "progress_ready": (result_dir / "progress.json").exists(),
+            "student_audio_count": len([f for f in audio_files if f.suffix.lower() in _AUDIO_EXTENSIONS]),
+            "result_ready": result_dir.exists() and (result_dir / "summary.csv").exists() if result_dir else False,
+            "progress_ready": result_dir.exists() and (result_dir / "progress.json").exists() if result_dir else False,
         }
 
+    # ---------- 路径工具 ----------
+
     def get_class_dir(self, class_id: str) -> Path:
-        """获取班级目录。"""
         return self.context.classes_dir / self._safe_id(class_id)
 
     def get_unit_dir(self, class_id: str, unit_id: str) -> Path:
-        """获取单元目录。"""
-        return self.get_class_dir(class_id) / "units" / self._safe_id(unit_id)
+        return self.context.units_dir / self._safe_id(unit_id)
+
+    def _class_unit_dir(self, class_id: str, unit_id: str) -> Path:
+        return self.get_class_dir(class_id) / self._safe_id(unit_id)
 
     def unit_paths(self, class_id: str, unit_id: str) -> dict[str, Path]:
-        """获取单元关键路径。"""
-        unit_dir = self.get_unit_dir(class_id, unit_id)
+        shared = self.context.units_dir / self._safe_id(unit_id)
+        class_unit = self._class_unit_dir(class_id, unit_id)
         return {
-            "unit_dir": unit_dir,
-            "standard_audio_dir": unit_dir / "standard_audio",
-            "standard_text_dir": unit_dir / "standard_text",
-            "imitation_audio_dir": unit_dir / "imitation_audio",
-            "result_dir": unit_dir / "result",
+            "unit_dir": shared,
+            "standard_audio_dir": shared / "standard_audio",
+            "standard_text_dir": shared / "standard_text",
+            "imitation_audio_dir": class_unit / "imitation_audio",
+            "result_dir": class_unit / "result",
         }
 
-    def _copy_legacy_files(self, source: Path, target: Path) -> None:
-        """非破坏性复制旧文件到默认单元。"""
-        if not source.exists():
-            return
-        target.mkdir(parents=True, exist_ok=True)
-        for path in source.iterdir():
-            if path.is_file() and not (target / path.name).exists():
-                shutil.copy2(path, target / path.name)
+    # ---------- 内部辅助 ----------
 
-    def _copy_legacy_result_files(self, source: Path, target: Path) -> None:
-        """非破坏性复制旧结果到默认单元。"""
-        if not source.exists():
-            return
-        target.mkdir(parents=True, exist_ok=True)
-        for path in source.iterdir():
-            destination = target / path.name
-            if destination.exists():
-                continue
-            if path.is_dir():
-                shutil.copytree(path, destination)
-            elif path.is_file():
-                shutil.copy2(path, destination)
+    def _safe_id(self, raw: str) -> str:
+        if not raw:
+            return ""
+        return raw
 
     def _ensure_students_csv(self, path: Path, audio_dir: Path) -> None:
-        """确保学生名单存在。"""
         if path.exists():
             return
         rows = []
@@ -557,14 +524,12 @@ class ClassService:
         self._write_students(path, rows)
 
     def _read_students(self, path: Path) -> list[dict]:
-        """读取学生名单。"""
         if not path.exists():
             return []
         with path.open("r", encoding="utf-8-sig", newline="") as file_obj:
             return [dict(row) for row in csv.DictReader(file_obj)]
 
     def _write_students(self, path: Path, rows: list[dict]) -> None:
-        """写入学生名单。"""
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8-sig", newline="") as file_obj:
             writer = csv.DictWriter(file_obj, fieldnames=["name", "student_id", "status", "note"])
@@ -573,11 +538,9 @@ class ClassService:
                 writer.writerow({key: row.get(key, "") for key in writer.fieldnames})
 
     def _student_key_from_audio(self, path: Path) -> str:
-        """从音频路径获取学生键。"""
         return path.stem
 
     def _normalize_student_row(self, row: dict) -> dict[str, str]:
-        """兼容中英文字段名，归一化学生 CSV 行。"""
         return {
             "name": row.get("name") or row.get("姓名") or row.get("学生") or "",
             "student_id": row.get("student_id") or row.get("学号") or row.get("id") or "",
@@ -586,39 +549,12 @@ class ClassService:
         }
 
     def _timestamp(self) -> str:
-        """返回用于归档目录名的时间戳。"""
         return datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    def _write_json_if_missing(self, path: Path, data: dict[str, Any]) -> None:
-        """文件不存在时写入 JSON。"""
-        if not path.exists():
-            self._write_json(path, data)
-
-    def _write_json(self, path: Path, data: dict[str, Any]) -> None:
-        """写入 JSON 文件。"""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp_path.replace(path)
-
-    def _read_json(self, path: Path, default: dict[str, Any]) -> dict[str, Any]:
-        """读取 JSON 文件。"""
+    def _read_json(self, path: Path, default: Any = None) -> Any:
         if not path.exists():
             return default
         try:
             return json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, FileNotFoundError):
             return default
-
-    def _slugify(self, value: str) -> str:
-        """将显示名转为安全 ID。"""
-        value = value.strip() or "untitled"
-        slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "-", value).strip("-")
-        return slug or "untitled"
-
-    def _safe_id(self, value: str) -> str:
-        """限制 ID 不能逃逸 classes 目录。"""
-        safe = self._slugify(value)
-        if safe in {".", ".."}:
-            raise ValueError("非法 ID")
-        return safe

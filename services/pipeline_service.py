@@ -14,6 +14,7 @@ pipeline_service.py — 流水线任务服务
 import asyncio
 import contextlib
 import io
+import re
 import threading
 import time
 import traceback
@@ -68,6 +69,13 @@ class PipelineService:
             "logs": ["任务已启动，正在调用 launcher.main"],
             "log_path": str(log_path),
             "_loop": None,  # SSE 连接后由 set_task_loop 注入
+            "progress": {
+                "total": 0,
+                "voice_done": 0,
+                "text_done": 0,
+                "llm_done": 0,
+                "stages": [],  # [{stage, status, current, total, message}]
+            },
         }
 
         with self._lock:
@@ -86,8 +94,9 @@ class PipelineService:
             args=(task_id, class_id, unit_id, cancel_event, event_queue),
             daemon=True,
         )
+        task["_thread"] = thread
         thread.start()
-        return task
+        return self._sanitize(task)
 
     def _sanitize(self, task: dict | None) -> dict:
         """移除内部字段（`_` 前缀），确保 JSON 可序列化。"""
@@ -111,16 +120,28 @@ class PipelineService:
             return self._sanitize(task) if task else None
 
     def cancel_task(self, task_id: str) -> dict:
-        """取消运行中的任务。"""
+        """取消运行中的任务（立即终止，不等待线程响应）。"""
         with self._lock:
             cancel_event = self._cancel_events.get(task_id)
             task = self._tasks.get(task_id)
             if not cancel_event or not task:
                 return {"cancelled": False, "reason": "任务不存在"}
             cancel_event.set()
-            task.setdefault("logs", []).append("用户已请求取消任务，将在阶段边界停止。")
+            task.setdefault("logs", []).append("用户已强制终止任务。")
             self._push_event(task_id, {"type": "cancel_requested"})
-        self.log_service.append_task_line(task_id, "用户已请求取消任务，将在阶段边界停止。", "WARNING")
+
+        # 立即终止所有线程池（cancel_futures=True 取消排队任务）
+        try:
+            from src import launcher as _launcher
+            for pool in (_launcher.voice_executor, _launcher.whisper_executor, _launcher.llm_executor):
+                if pool is not None:
+                    pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+
+        # 直接标记为 cancelled，不等后台线程自行退出
+        self._finish_task(task_id, "cancelled", None)
+        self.log_service.append_task_line(task_id, "任务已被用户强制终止。", "WARNING")
         return {"cancelled": True}
 
     def get_logs(self, task_id: str) -> list[str]:
@@ -200,7 +221,7 @@ class PipelineService:
             self._finish_task(task_id, "failed", 1)
 
     def _append_log(self, task_id: str, line: str, level: str = "INFO") -> None:
-        """写入内存日志和日志文件。"""
+        """写入内存日志和日志文件，同时从日志行提取进度信息。"""
         clean_line = line.rstrip()
         if not clean_line:
             return
@@ -210,27 +231,73 @@ class PipelineService:
             if task:
                 task.setdefault("logs", []).append(clean_line)
                 task["current_stage"] = self._infer_stage(clean_line, task.get("current_stage", "init"))
+                # 从日志行提取进度（补充结构化事件可能遗漏的更新）
+                self._parse_log_progress(task, clean_line)
 
     def _handle_progress_event(self, task_id: str, event: dict) -> None:
-        """处理 launcher 发送的结构化进度事件。"""
-        self.log_service.append("task", "INFO", f"进度事件: {event.get('type')}", {"task_id": task_id, "event": event})
+        """处理 launcher 发送的结构化进度事件，驱动进度条更新。"""
+        etype = event.get("type", "")
+        self.log_service.append("task", "INFO", f"进度事件: {etype}", {"task_id": task_id, "event": event})
         with self._lock:
             task = self._tasks.get(task_id)
-            if task:
-                task.setdefault("events", []).append(event)
-                if event.get("stage"):
-                    task["current_stage"] = event["stage"]
-                task["last_event"] = event
+            if not task:
+                return
+            task.setdefault("events", []).append(event)
+            progress = task.setdefault("progress", {"total": 0, "voice_done": 0, "text_done": 0, "llm_done": 0, "stages": []})
+
+            # ---- student_progress: 每个学生的 voice / text 状态变更 ----
+            if etype == "student_progress":
+                state = event.get("state", {})
+                task.setdefault("_voice_seen", set())
+                task.setdefault("_text_seen", set())
+                student = event.get("student", "")
+                if state.get("voice") == "done" and student and student not in task["_voice_seen"]:
+                    task["_voice_seen"].add(student)
+                    progress["voice_done"] = len(task["_voice_seen"])
+                if state.get("text") == "done" and student and student not in task["_text_seen"]:
+                    task["_text_seen"].add(student)
+                    progress["text_done"] = len(task["_text_seen"])
+                    progress["llm_done"] = len(task["_text_seen"])
+
+            # ---- student_scan: 设置总学生数 ----
+            if etype == "student_scan":
+                total = event.get("total", 0)
+                if total:
+                    progress["total"] = total
+
+            # ---- stage_progress: 阶段进度列表 ----
+            if etype == "stage_progress":
+                stage = event.get("stage", "")
+                status = event.get("status", "")
+                found = False
+                for s in progress["stages"]:
+                    if s.get("stage") == stage:
+                        s.update({"status": status, "current": event.get("current"),
+                                  "total": event.get("total"), "message": event.get("message", "")})
+                        found = True
+                        break
+                if not found:
+                    progress["stages"].append({"stage": stage, "status": status,
+                        "current": event.get("current"), "total": event.get("total"),
+                        "message": event.get("message", "")})
+                if stage:
+                    task["current_stage"] = stage
+
+            task["last_event"] = event
 
     def _finish_task(self, task_id: str, status: str, exit_code: int | None) -> None:
-        """完成任务状态写入并触发延迟清理。"""
+        """完成任务状态写入（幂等：已完成/已取消则跳过）。"""
         with self._lock:
             task = self._tasks.get(task_id)
-            if task:
-                task["status"] = status
-                task["exit_code"] = exit_code
-                task["finished_at"] = time.time()
-                task.setdefault("logs", []).append(f"任务结束，状态: {status}")
+            if not task:
+                return
+            # 幂等保护：已标记为终态的任务不再覆盖
+            if task.get("status") in ("completed", "failed", "cancelled"):
+                return
+            task["status"] = status
+            task["exit_code"] = exit_code
+            task["finished_at"] = time.time()
+            task.setdefault("logs", []).append(f"任务结束，状态: {status}")
         self.log_service.append_task_line(task_id, f"任务结束，状态: {status}")
         # 推送最终快照
         final_snapshot = self.get_task(task_id)
@@ -254,6 +321,60 @@ class PipelineService:
             if keyword in line:
                 return stage
         return fallback
+
+    def _parse_log_progress(self, task: dict, line: str) -> None:
+        """从日志行中提取进度信息，作为结构化事件的补充。
+        
+        识别模式（log-driven，与结构化事件互补）：
+          - "[Voice] {name} 完成/已完成" → voice_done +1
+          - "[LLM] {name} 比对完成" → text_done +1, llm_done +1
+          - "[Phase X]" → 阶段状态更新
+          - "找到 N 个仿读音频文件" → 设置 total
+        """
+        progress = task.setdefault("progress", {"total": 0, "voice_done": 0, "text_done": 0, "llm_done": 0, "stages": []})
+        task.setdefault("_voice_seen", set())
+        task.setdefault("_text_seen", set())
+
+        # "[Voice] XXX 完成。" 或 "[Voice] XXX 已完成，跳过。"
+        m = re.search(r'\[Voice\]\s+(.+?)\s+(?:完成|已完成)', line)
+        if m:
+            student = m.group(1).strip()
+            if student and student not in task["_voice_seen"]:
+                task["_voice_seen"].add(student)
+                progress["voice_done"] = len(task["_voice_seen"])
+
+        # "[LLM] XXX 比对完成" → Whisper+LLM 都完成
+        m = re.search(r'\[LLM\]\s+(.+?)\s+比对完成', line)
+        if m:
+            student = m.group(1).strip()
+            if student and student not in task["_text_seen"]:
+                task["_text_seen"].add(student)
+                progress["text_done"] = len(task["_text_seen"])
+                progress["llm_done"] = len(task["_text_seen"])
+
+        # "找到 N 个仿读音频文件"
+        m = re.search(r'找到\s+(\d+)\s+个仿读音频文件', line)
+        if m:
+            progress["total"] = int(m.group(1))
+
+        # "[Phase X] ..." 阶段状态
+        m = re.search(r'\[Phase\s+(\d+)\]\s*(.+)', line)
+        if m:
+            phase_num = int(m.group(1))
+            msg = m.group(2).strip()
+            stage_map = {1: "standard_prepare", 2: "voice_analysis", 3: "voice_analysis",
+                         4: "text_analysis", 5: "wait", 6: "post_process",
+                         7: "summary", 8: "error_visualize"}
+            stage = stage_map.get(phase_num, f"phase_{phase_num}")
+            status = "done" if ("完成" in msg or "跳过" in msg or "已跳过" in msg) else "running"
+            found = False
+            for s in progress["stages"]:
+                if s.get("stage") == stage:
+                    s.update({"status": status, "message": msg})
+                    found = True
+                    break
+            if not found:
+                progress["stages"].append({"stage": stage, "status": status, "message": msg})
 
 
 class _LineCapture(io.TextIOBase):

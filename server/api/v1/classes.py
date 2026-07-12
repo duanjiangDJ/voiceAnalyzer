@@ -9,6 +9,7 @@ classes.py — 班级与单元管理 API
 """
 
 from fastapi import APIRouter, File, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from services.class_service import ClassService, DEFAULT_CLASS_ID, DEFAULT_UNIT_ID
@@ -66,13 +67,13 @@ def permanently_delete_class(class_id: str) -> dict:
 
 @router.get("/{class_id}/units")
 def list_units(class_id: str) -> dict:
-    """列出指定班级的单元。"""
+    """列出所有共享单元（class_id 保留兼容性）。"""
     return {"success": True, "data": _class_service.list_units(class_id)}
 
 
 @router.post("/{class_id}/units")
 def create_unit(class_id: str, payload: NamedPayload) -> dict:
-    """创建指定班级的单元。"""
+    """创建共享单元（class_id 保留兼容性）。"""
     return {"success": True, "data": _class_service.create_unit(class_id, payload.name, payload.description)}
 
 
@@ -129,3 +130,14 @@ async def import_students_csv(class_id: str, file: UploadFile = File(...)) -> di
 def sync_students(class_id: str = DEFAULT_CLASS_ID, unit_id: str = DEFAULT_UNIT_ID) -> dict:
     """从单元音频文件同步学生名单。"""
     return {"success": True, "data": _class_service.upsert_students_from_audio(class_id, unit_id)}
+
+
+@router.get("/students/template")
+def download_student_csv_template():
+    """下载学生名单 CSV 模板（UTF-8 BOM，Excel 兼容）。"""
+    csv_content = "\ufeff姓名,学号\n张三,2024000001\n"
+    return Response(
+        content=csv_content.encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=student_template.csv"},
+    )

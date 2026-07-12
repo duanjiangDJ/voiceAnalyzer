@@ -23,6 +23,7 @@ text_llm.py — 基于 LLM 的语音转写文本比对模块
 """
 
 import csv
+import http.client
 import json
 import os
 import re
@@ -140,23 +141,41 @@ def call_llm(system_prompt: str, user_prompt: str, use_json: bool = False) -> st
     if _config.llm.thinking:
         body["thinking"] = {"type": "enabled"}
 
-    # ---- 发送请求 ----
+    # ---- 发送请求（含重试：最多 3 次，指数退避）----
     req = urllib.request.Request(
         url, data=json.dumps(body).encode("utf-8"), headers=headers
     )
-    try:
-        with urllib.request.urlopen(req, timeout=_config.llm.timeout) as resp:
-            raw_body = resp.read().decode("utf-8")
-            result = json.loads(raw_body)
-    except urllib.error.HTTPError as e:
-        error_body = ""
+    result = None
+    raw_body = ""
+    last_error = None
+    for attempt in range(3):
         try:
-            error_body = e.read().decode("utf-8")
-        except Exception:
-            pass
-        raise RuntimeError(f"[LLM] API 返回 HTTP {e.code}: {error_body}")
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"[LLM] 无法连接 API ({url}): {e.reason}")
+            with urllib.request.urlopen(req, timeout=_config.llm.timeout) as resp:
+                raw_body = resp.read().decode("utf-8")
+                result = json.loads(raw_body)
+            break  # 成功则跳出重试循环
+        except (http.client.IncompleteRead, http.client.RemoteDisconnected,
+                ConnectionResetError, TimeoutError, urllib.error.URLError) as e:
+            last_error = e
+            if attempt < 2:
+                wait = (2 ** attempt) * 1.5  # 1.5s, 3s
+                print(f"  [LLM] 网络异常 (尝试 {attempt + 1}/3)，{wait:.1f}s 后重试: {e}")
+                time.sleep(wait)
+                # 重建 request（某些实现要求）和 body bytes
+                req = urllib.request.Request(
+                    url, data=json.dumps(body).encode("utf-8"), headers=headers
+                )
+            else:
+                raise RuntimeError(
+                    f"[LLM] 网络异常，已重试 3 次仍失败: {type(e).__name__}: {e}"
+                ) from e
+        except urllib.error.HTTPError as e:
+            error_body = ""
+            try:
+                error_body = e.read().decode("utf-8")
+            except Exception:
+                pass
+            raise RuntimeError(f"[LLM] API 返回 HTTP {e.code}: {error_body}")
 
     # ---- 验证响应 ----
     if "error" in result:

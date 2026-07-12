@@ -108,6 +108,19 @@ class ResultService:
             ],
         }
 
+    def get_progress(self, class_id: str = DEFAULT_CLASS_ID, unit_id: str = DEFAULT_UNIT_ID) -> dict:
+        """读取 progress.json 并返回各阶段进度计数。"""
+        result_dir = self._result_dir(class_id, unit_id)
+        progress_path = result_dir / "progress.json"
+        if not progress_path.exists():
+            return {"total": 0, "voice_done": 0, "text_done": 0, "students": {}}
+        data = self._read_json(progress_path)
+        students = data.get("students", {})
+        total = len(students)
+        voice_done = sum(1 for s in students.values() if isinstance(s, dict) and s.get("voice") == "done")
+        text_done = sum(1 for s in students.values() if isinstance(s, dict) and s.get("text") == "done")
+        return {"total": total, "voice_done": voice_done, "text_done": text_done, "students": students}
+
     def resolve_export_path(self, relative_path: str, class_id: str = DEFAULT_CLASS_ID, unit_id: str = DEFAULT_UNIT_ID) -> Path | None:
         """解析导出文件路径，确保不越过单元结果目录。"""
         result_dir = self._result_dir(class_id, unit_id).resolve()
@@ -118,7 +131,6 @@ class ResultService:
 
     def _result_dir(self, class_id: str, unit_id: str) -> Path:
         """获取班级/单元结果目录。"""
-        self.class_service.ensure_default_workspace()
         return self.class_service.unit_paths(class_id, unit_id)["result_dir"]
 
     def _find_student_dir(self, student_id: str, class_id: str, unit_id: str) -> Path | None:

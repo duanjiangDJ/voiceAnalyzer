@@ -109,6 +109,27 @@ td button + button { margin-left: 6px; }
 .modal-body { min-height: 0; overflow: auto; display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, .42fr); gap: 18px; padding: 20px; }
 .modal-body aside { border-left: 1px solid var(--line); padding-left: 18px; }
 .modal-body pre { max-height: 360px; overflow: auto; background: #0b1220; color: #dbeafe; border-radius: 8px; padding: 12px; font-size: 12px; }
+/* 学生详情新布局 */
+.modal-body-new { min-height: 0; overflow: auto; padding: 20px; }
+.detail-images h3 { margin-bottom: 10px; }
+.detail-img-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+.detail-img-grid img { width: 100%; border: 1px solid var(--line); border-radius: 6px; }
+.zoomable-image { cursor: zoom-in; }
+.image-preview { position: fixed; inset: 0; z-index: 40; background: rgba(11,18,32,.82); display: grid; place-items: center; padding: 28px; cursor: zoom-out; }
+.image-preview img { max-width: 96vw; max-height: 92vh; object-fit: contain; background: #fff; border-radius: 8px; box-shadow: 0 24px 80px rgba(0,0,0,.38); }
+.stats-panel { margin: 0 0 20px; box-shadow: none; }
+.stats-panel table { min-width: 0; }
+.stats-panel th, .stats-panel td { text-align: center; white-space: nowrap; }
+.comparison-cards { display: grid; gap: 10px; }
+.cmp-card { background: #f8faff; border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+.cmp-header { font-weight: 700; font-size: 14px; margin-bottom: 8px; color: var(--primary); }
+.cmp-row { display: grid; grid-template-columns: 80px 1fr; gap: 10px; margin-bottom: 6px; font-size: 13px; line-height: 1.55; }
+.cmp-label { color: var(--muted); flex-shrink: 0; font-weight: 600; }
+.cmp-text { color: var(--ink); }
+.cmp-text strong { font-weight: 800; color: #0f172a; }
+.cmp-detail { white-space: pre-line; color: var(--danger); }
+.cmp-detail a { color: #2563eb; text-decoration: underline; }
+.text-block { font-size: 13px; line-height: 1.7; white-space: pre-wrap; max-height: 360px; overflow: auto; }
 /* 统一弹窗 */
 .app-modal { width: min(460px, 90vw); background: #fff; border-radius: 10px; box-shadow: 0 30px 90px rgba(0,0,0,.28); animation: rise .18s ease both; overflow: hidden; }
 .app-modal header { padding: 20px 22px 0; }
@@ -156,7 +177,8 @@ button.loading::after { content: ""; display: inline-block; width: 14px; height:
 button:disabled { opacity: .45; cursor: not-allowed; transform: none !important; }
 
 /* 仪表盘新布局 */
-.dash-row { display: grid; grid-template-columns: minmax(280px, .3fr) minmax(0, .7fr); gap: 16px; align-items: start; }
+.dash-row { display: grid; grid-template-columns: minmax(280px, .3fr) minmax(0, .7fr); gap: 20px; align-items: stretch; }
+.dash-cards { display: grid; gap: 14px; align-content: start; }
 /* 教材管理行 */
 .materials-row { display: grid; grid-template-columns: minmax(340px, .55fr) minmax(0, .45fr); gap: 16px; align-items: stretch; }
 .audio-panel { display: grid; gap: 12px; }
@@ -167,7 +189,9 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none !important;
 .audio-card-info { flex: 1; display: grid; gap: 4px; min-width: 0; }
 .audio-card-info strong { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .audio-card-info small { color: var(--muted); font-size: 12px; }
-.dash-chart { min-height: 300px; }
+.dash-chart { min-height: 300px; display: flex; flex-direction: column; }
+.dash-chart .empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.dash-chart .chart { flex: 1; min-height: 300px; }
 /* 保持 dash-cards 等卡片样式 */
 .dash-card { display: flex; gap: 14px; align-items: center; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 18px; }
 .dash-card-icon { width: 46px; height: 46px; border-radius: 12px; display: grid; place-items: center; font-weight: 700; font-size: 20px; flex-shrink: 0; }
@@ -203,9 +227,11 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none !important;
   .student-modal { width: 96vw; }
   .modal-body { grid-template-columns: 1fr; }
   .modal-body aside { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 16px; }
+  .detail-img-grid { grid-template-columns: 1fr; }
+  .text-compare { grid-template-columns: 1fr; }
   .dash-layout { grid-template-columns: 1fr; }
   .dash-right { position: static; }
-  .dash-cards { grid-template-columns: 1fr; }
+  .dash-cards { grid-template-columns: 1fr; gap: 12px; }
   .dash-row { grid-template-columns: 1fr; }
   .materials-row { grid-template-columns: 1fr; }
   .pbar { grid-template-columns: 80px 1fr auto; }

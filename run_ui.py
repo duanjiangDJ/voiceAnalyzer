@@ -30,7 +30,7 @@ if _project_root not in sys.path:
 
 def _open_browser(url: str) -> None:
     """稍等服务启动后打开默认浏览器。"""
-    time.sleep(1.2)
+    time.sleep(2)
     webbrowser.open(url)
 
 

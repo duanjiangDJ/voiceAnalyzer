@@ -40,3 +40,9 @@ def get_student(student_id: str, class_id: str = DEFAULT_CLASS_ID, unit_id: str 
 def get_error_aggregate(class_id: str = DEFAULT_CLASS_ID, unit_id: str = DEFAULT_UNIT_ID) -> dict:
     """获取全班错误聚合。"""
     return {"success": True, "data": _result_service.get_error_aggregate(class_id, unit_id)}
+
+
+@router.get("/progress")
+def get_progress(class_id: str = DEFAULT_CLASS_ID, unit_id: str = DEFAULT_UNIT_ID) -> dict:
+    """读取 progress.json 进度数据。"""
+    return {"success": True, "data": _result_service.get_progress(class_id, unit_id)}

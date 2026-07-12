@@ -446,6 +446,13 @@ def voice_task(
     # 通知 tracker + 检查该学生是否 voice+text 均完成
     completion_tracker.mark_voice(name)
     _maybe_write_summary(name)
+    # 发送语音分析进度更新（驱动前端进度条）
+    with _progress_lock:
+        _s = progress_data.get("students", {})
+        _vd = sum(1 for s in _s.values() if isinstance(s, dict) and s.get("voice") in ("done", "failed"))
+        _vt = len(_s)
+    _emit_stage("voice_analysis", "running" if _vd < _vt else "done",
+                current=_vd, total=_vt, message=f"{_vd}/{_vt} 完成")
 
 
 def whisper_loop(
@@ -483,6 +490,12 @@ def whisper_loop(
             print(f"  [Whisper] {name} 文字分析已完成，跳过。")
             completion_tracker.mark_text(name)
             _maybe_write_summary(name)
+            with _progress_lock:
+                _s = progress_data.get("students", {})
+                _td = sum(1 for s in _s.values() if isinstance(s, dict) and s.get("text") in ("done", "failed"))
+                _tt = len(_s)
+            _emit_stage("text_analysis", "running" if _td < _tt else "done",
+                        current=_td, total=_tt, message=f"{_td}/{_tt} 完成")
             continue
 
         # ---- 已转写，仅重跑 LLM ----
@@ -520,6 +533,12 @@ def whisper_loop(
         )
 
     print("  [Whisper] 全部学生转写任务已调度完毕。")
+    with _progress_lock:
+        _s = progress_data.get("students", {})
+        _wd = sum(1 for s in _s.values() if isinstance(s, dict) and s.get("text") in ("done", "transcribed", "failed"))
+        _wt = len(_s)
+    _emit_stage("whisper_transcribe", "done",
+                current=_wd, total=_wt, message=f"转写调度完毕 {_wd}/{_wt}")
 
 
 def _llm_task_with_callback(
@@ -599,6 +618,13 @@ def _llm_task_with_callback(
         # 无论成败，都标记 text 侧完成并尝试写 summary
         completion_tracker.mark_text(name)
         _maybe_write_summary(name)
+        # 发送文字分析进度更新（每个 LLM 任务完成后）
+        with _progress_lock:
+            _s = progress_data.get("students", {})
+            _td = sum(1 for s in _s.values() if isinstance(s, dict) and s.get("text") in ("done", "failed"))
+            _tt = len(_s)
+        _emit_stage("text_analysis", "running" if _td < _tt else "done",
+                    current=_td, total=_tt, message=f"{_td}/{_tt} 完成")
 
 
 # ==============================================================================
@@ -675,6 +701,7 @@ def main(class_id: str | None = None,
         standard_text = find_single_file(standard_text_dir, "txt")
     except Exception as e:
         print(f"[错误] {e}")
+        _emit_stage("standard_prepare", "failed", message=str(e))
         sys.exit(1)
 
     print(f"  标准音频: {standard_audio}")
@@ -698,6 +725,7 @@ def main(class_id: str | None = None,
     ]
     if not imitation_files:
         print("未找到仿读音频文件。")
+        _emit_stage("student_scan", "failed", message="未找到仿读音频文件")
         sys.exit(0)
 
     # 构建 {学生名: 音频路径} 映射

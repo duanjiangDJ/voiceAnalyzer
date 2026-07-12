@@ -25,6 +25,7 @@ class AppContext:
     result_dir: Path
     knowledge_dir: Path
     classes_dir: Path
+    units_dir: Path
     logs_dir: Path
     uploads_dir: Path
     runtime_dir: Path
@@ -47,10 +48,12 @@ def get_app_context() -> AppContext:
     base_dir = Path(config.paths.base_dir)
     resource_dir = base_dir / "resource"
     classes_dir = resource_dir / "classes"
+    units_dir = resource_dir / "units"
     logs_dir = resource_dir / "logs"
     uploads_dir = resource_dir / "uploads"
     runtime_dir = logs_dir / "runtime"
     classes_dir.mkdir(parents=True, exist_ok=True)
+    units_dir.mkdir(parents=True, exist_ok=True)
     (logs_dir / "tasks").mkdir(parents=True, exist_ok=True)
     (uploads_dir / "tmp").mkdir(parents=True, exist_ok=True)
     (runtime_dir / "tasks").mkdir(parents=True, exist_ok=True)
@@ -62,6 +65,7 @@ def get_app_context() -> AppContext:
         result_dir=base_dir / config.paths.result_dir,
         knowledge_dir=base_dir / config.paths.knowledge_dir,
         classes_dir=classes_dir,
+        units_dir=units_dir,
         logs_dir=logs_dir,
         uploads_dir=uploads_dir,
         runtime_dir=runtime_dir,
